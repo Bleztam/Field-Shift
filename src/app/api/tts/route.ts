@@ -1,10 +1,13 @@
-// ─── /api/tts — Amharic: Addis AI first, Gemini TTS fallback, else browser ───
-// Request shape unchanged:  { text, voice?, language? }
-// Response shape unchanged: { audioBase64, ... } (audioBase64 is null when
-// the client should fall back to speechSynthesis — am-ET, then en).
+// ─── /api/tts — supported languages via Addis AI, Gemini fallback, else browser ───
+// Request:  { text, voice?, language? }   (language: Addis code am/om/ti/sid/wal,
+//           or legacy "Amharic"/"Afaan Oromo"/"English"/"Spanish")
+// Response: { audioBase64, audioProvider } (audioBase64 null → client speaks
+//           via speechSynthesis in the active language, then en).
 import { NextRequest, NextResponse } from "next/server";
 import { synthesizeSpeechWithGemini } from "@/lib/audioBuffer";
-import { synthesizeAmharic } from "@/lib/addisTts";
+import { synthesizeAddis } from "@/lib/addisTts";
+import { resolveVoiceForLanguage } from "@/lib/addisVoices";
+import { isAddisLanguageCode } from "@/lib/languageConfig";
 import { looksLikeAmharic } from "@/lib/languageCodes";
 import { AudioProvider } from "@/lib/types";
 
@@ -20,16 +23,33 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const wantsAmharic = language === "Amharic" || looksLikeAmharic(text);
+    // Normalize legacy display names to Addis codes.
+    const addisCode = isAddisLanguageCode(language)
+      ? language
+      : language === "Amharic"
+        ? "am"
+        : language === "Afaan Oromo"
+          ? "om"
+          : looksLikeAmharic(text)
+            ? "am"
+            : null;
 
-    if (wantsAmharic) {
-      const addis = await synthesizeAmharic(text);
-      if (addis) {
-        return NextResponse.json({
-          audioBase64: `data:audio/mpeg;base64,${addis.audioBase64}`,
-          audioProvider: "addis" satisfies AudioProvider,
+    if (addisCode) {
+      const voiceId = await resolveVoiceForLanguage(addisCode);
+      if (voiceId) {
+        const addis = await synthesizeAddis(text, {
+          language: addisCode,
+          voiceId,
         });
+        if (addis) {
+          return NextResponse.json({
+            audioBase64: `data:audio/mpeg;base64,${addis.audioBase64}`,
+            audioProvider: "addis" satisfies AudioProvider,
+            language: addisCode,
+          });
+        }
       }
+      // No voice or synthesis failed → fall through to Gemini/browser.
     }
 
     const audioBase64 = await synthesizeSpeechWithGemini(text, voice);

@@ -5,6 +5,8 @@
 // Billing is per minute of generated audio: cache aggressively, cap text,
 // and retry at most once with the same idempotency key.
 import { createHash } from "crypto";
+import { AddisLanguageCode } from "./languageConfig";
+import { DEFAULT_VOICE_ID_AM } from "./addisVoices";
 
 const ADDIS_BASE_URL = "https://api.addisassistant.com";
 const GENERATIONS_PATH = "/api/v1/voice/generations";
@@ -84,6 +86,7 @@ interface AttemptOutcome {
 async function postGeneration(
   apiKey: string,
   voiceId: string,
+  language: AddisLanguageCode,
   text: string,
   clientRequestId: string,
   timeoutMs: number
@@ -101,7 +104,7 @@ async function postGeneration(
       body: JSON.stringify({
         client_request_id: clientRequestId,
         voice_id: voiceId,
-        language: "am",
+        language,
         text,
         output_format: "mp3_44100",
       }),
@@ -141,13 +144,16 @@ async function postGeneration(
 }
 
 /**
- * Synthesizes Amharic speech via Addis AI. Returns null on any failure —
- * this function never throws, never logs the API key or headers.
+ * Synthesizes speech via Addis AI for any supported language. Returns null on
+ * any failure — never throws, never logs the API key or headers. Cache and
+ * idempotency keys are derived from sha256(language + voice + text) so
+ * repeated questions never re-bill.
  */
-export async function synthesizeAmharic(
+export async function synthesizeAddis(
   text: string,
-  voiceId: string = process.env.ADDIS_VOICE_ID ?? "am-hamen"
+  options: { language: AddisLanguageCode; voiceId: string }
 ): Promise<AddisTtsResult | null> {
+  const { language, voiceId } = options;
   try {
     const apiKey = process.env.ADDIS_API_KEY;
     if (!apiKey) return null;
@@ -155,7 +161,7 @@ export async function synthesizeAmharic(
     const cappedText = capTextForTts(text ?? "");
     if (!cappedText) return null;
 
-    const contentHash = sha256Hex(`${voiceId}${cappedText}`);
+    const contentHash = sha256Hex(`${language}${voiceId}${cappedText}`);
     const cached = audioCache.get(contentHash);
     if (cached) return cached;
 
@@ -165,10 +171,10 @@ export async function synthesizeAmharic(
         ? Number(process.env.ADDIS_TTS_TIMEOUT_MS)
         : DEFAULT_TIMEOUT_MS;
 
-    let outcome = await postGeneration(apiKey, voiceId, cappedText, clientRequestId, timeoutMs);
+    let outcome = await postGeneration(apiKey, voiceId, language, cappedText, clientRequestId, timeoutMs);
     if (!outcome.ok && outcome.retryable) {
       // Single retry, same idempotency key — the API dedupes the replay.
-      outcome = await postGeneration(apiKey, voiceId, cappedText, clientRequestId, timeoutMs);
+      outcome = await postGeneration(apiKey, voiceId, language, cappedText, clientRequestId, timeoutMs);
     }
 
     if (!outcome.ok || !outcome.body) {
@@ -209,6 +215,17 @@ export async function synthesizeAmharic(
     );
     return null;
   }
+}
+
+/**
+ * Backward-compatible Amharic-only wrapper (original FS-2 signature).
+ * New code should call synthesizeAddis with a resolved voice.
+ */
+export async function synthesizeAmharic(
+  text: string,
+  voiceId: string = process.env.ADDIS_VOICE_ID ?? DEFAULT_VOICE_ID_AM
+): Promise<AddisTtsResult | null> {
+  return synthesizeAddis(text, { language: "am", voiceId });
 }
 
 let healthCache: { at: number; configured: boolean; reachable: boolean } | null = null;

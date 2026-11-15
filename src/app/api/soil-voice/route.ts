@@ -1,12 +1,18 @@
 // ─── /api/soil-voice — Gemini NLU/explanation + code verdict + Addis TTS ───
 // Pipeline: (1) Gemini extracts { crop, intent } from the farmer question
-// (schema-validated, keyword fallback) → (2) cropVerdict is computed in code,
-// never by the LLM → (3) Gemini writes the first-person monologue →
-// (4) Amharic audio via Addis AI, Gemini TTS fallback, browser last.
+// (schema-validated, keyword fallback in the active language) → (2) cropVerdict
+// is computed in code, never by the LLM → (3) Gemini writes the first-person
+// monologue in the target language → (4) the hardcoded closing line is
+// appended IN CODE → (5) audio via Addis AI (per-language voice), Gemini TTS
+// for am/en/es, browser last.
+//
+// Request additions (all optional, backward compatible):
+//   { farmerQuestion, crop?, lat?, lon?, locationSource?, language? }
+// language accepts Addis codes (am/om/ti/sid/wal) or legacy display names.
+// Response adds { language, regionName, locationSource }.
 import { NextRequest, NextResponse } from "next/server";
 import {
   SoilVoiceResponse,
-  Language,
   RotationStrategy,
   SoilMood,
   NasaPowerDaily,
@@ -14,7 +20,8 @@ import {
   AudioProvider,
 } from "@/lib/types";
 import { synthesizeSpeechWithGemini } from "@/lib/audioBuffer";
-import { synthesizeAmharic } from "@/lib/addisTts";
+import { synthesizeAddis, capTextForTts } from "@/lib/addisTts";
+import { resolveVoiceForLanguage } from "@/lib/addisVoices";
 import { DEFAULT_STRATEGY_WEIGHTS } from "@/lib/strategyScoring";
 import {
   CANONICAL_CROPS,
@@ -25,23 +32,73 @@ import {
   inferIntentFromText,
   matchCropFromText,
 } from "@/lib/cropIntent";
+import {
+  AddisLanguageCode,
+  isAddisLanguageCode,
+  SUPPORTED_LANGUAGES,
+} from "@/lib/languageConfig";
+import { reverseGeocodeRegion, RegionResult } from "@/lib/region";
 
 const GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 
+/** Resolved spoken target: an Addis language code, or legacy en/es. */
+type SpokenTarget = AddisLanguageCode | "en" | "es";
+
+function normalizeLanguage(raw: unknown): SpokenTarget {
+  if (isAddisLanguageCode(raw)) return raw;
+  if (raw === "Amharic") return "am";
+  if (raw === "Afaan Oromo") return "om";
+  if (raw === "Spanish") return "es";
+  return "en";
+}
+
+/** Display name used inside Gemini prompts. */
+function promptLanguageName(target: SpokenTarget): string {
+  if (target === "en") return "English";
+  if (target === "es") return "Spanish";
+  return SUPPORTED_LANGUAGES[target].promptName;
+}
+
+/**
+ * Trims a monologue to at most two sentences and appends the hardcoded
+ * closing line — in code, never via the LLM. Trimming first keeps the whole
+ * result inside the 3-sentence TTS cap so the closing is always spoken.
+ */
+export function appendClosingLine(script: string, closingLine: string): string {
+  const base = (script ?? "").trim();
+  if (!base) return closingLine;
+  const sentences = base.match(/[^.!?።\n]+[.!?።]*/gu) ?? [base];
+  const trimmed = sentences
+    .slice(0, 2)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(" ");
+  return `${trimmed} ${closingLine}`.trim();
+}
+
 function buildPrompt(
   nasaDataSummary: string,
-  language: Language,
+  target: SpokenTarget,
   farmerPriorities: string,
   farmerQuestion?: string
 ): string {
+  const languageName = promptLanguageName(target);
   const questionSection = farmerQuestion
     ? `\n## FARMER QUESTION TO YOU (THE SOIL)\nThe farmer is speaking directly to you and asks: "${farmerQuestion}"\nAnswer this specific question directly in your first-person monologue while citing your live NASA data!\n`
     : "";
 
-  const amharicScriptRule =
-    language === "Amharic"
-      ? " The monologue MUST be written in plain Ge'ez (Ethiopic) script only: no markdown, no emojis, and no Latin digits — spell every number out in Amharic words."
-      : "";
+  // NOTE: Gemini output quality is weaker for om/ti/sid/wal than for am.
+  // When Gemini fails (or returns unusable text) the route falls back to the
+  // deterministic per-language template in languageConfig — never to a
+  // free-form model guess.
+  let scriptRule = "";
+  if (target !== "en" && target !== "es") {
+    const script = SUPPORTED_LANGUAGES[target].script;
+    scriptRule =
+      script === "ethiopic"
+        ? " The monologue MUST be written in plain Ge'ez (Ethiopic) script only: no markdown, no emojis, and no Latin digits — spell every number out in words."
+        : " The monologue MUST be written in plain Latin script only (no Ge'ez characters): no markdown, no emojis, and no digits — spell every number out in words.";
+  }
 
   return `You are an expert agronomist AI fusing satellite remote sensing with ground-level camera imagery. You speak directly AS THE LIVING SOIL.
 
@@ -69,7 +126,7 @@ ${questionSection}
     }
   },
   "mood": "stressed",
-  "firstPersonScript": "A dramatic, scientifically grounded 2-3 sentence monologue spoken BY the soil itself in ${language}. The soil refers to itself in first person (e.g. 'I am the soil'). Cite specific NASA data (SMAP moisture, ECOSTRESS heat, Landsat BSI, etc.). ${farmerQuestion ? 'Directly address the farmer question: ' + farmerQuestion : 'Be emotional and urgent.'}${amharicScriptRule}",
+  "firstPersonScript": "A dramatic, scientifically grounded 2 sentence monologue spoken BY the soil itself in ${languageName}. The soil refers to itself in first person (e.g. 'I am the soil'). Cite specific NASA data (SMAP moisture, ECOSTRESS heat, Landsat BSI, etc.) but do NOT invent new numbers beyond the data provided. ${farmerQuestion ? 'Directly address the farmer question: ' + farmerQuestion : 'Be emotional and urgent.'} Do not add any closing advice about consulting an agent — that line is appended separately by the system.${scriptRule}",
   "englishSubtitles": "Accurate English translation of the firstPersonScript if language is not English, otherwise identical.",
   "strategies": [
     {
@@ -114,11 +171,11 @@ async function extractCropIntentWithGemini(
   apiKey: string
 ): Promise<ExtractedCropIntent | null> {
   const safeQuestion = question.replace(/"{3,}/g, '"').slice(0, 500);
-  const prompt = `You extract structured fields from a smallholder farmer's message (it may be in Amharic, Afaan Oromo, English, or Spanish).
+  const prompt = `You extract structured fields from a smallholder farmer's message (it may be in Amharic, Afaan Oromo, Tigrinya, Sidamo, Wolaytta, English, or Spanish).
 Return ONLY compact JSON (no markdown fences):
 {"crop": <"teff"|"maize"|"chickpea"|"wheat"|"sorghum"|"haricot_bean"|null>, "intent": <"plant_check"|"irrigation"|"cash_income"|"soil_health"|"general">}
 Rules:
-- crop = the crop the farmer asks about. Map local names: ጤፍ=teff, በቆሎ=maize, ሽምብራ=chickpea, ስንዴ=wheat, ማሽላ=sorghum, ቦለቄ/ፈሰስ=haricot_bean. null if no crop is mentioned.
+- crop = the crop the farmer asks about. Map local names: ጤፍ=teff, በቆሎ/boqolloo=maize, ሽምብራ/shimburaa=chickpea, ስንዴ/qamaadii=wheat, ማሽላ/mashilaa=sorghum, ቦለቄ/boleeqe/ፈሰስ=haricot_bean. null if no crop is mentioned.
 - intent = "irrigation" if they mention watering/irrigating/river/well/pump; "cash_income" if about profit/selling/money/market; "soil_health" if about cracking/moisture/erosion/fertility; "plant_check" if asking whether/when/what to plant; otherwise "general".
 Message: """${safeQuestion}"""`;
 
@@ -170,25 +227,32 @@ Message: """${safeQuestion}"""`;
 }
 
 interface FinalizeContext {
-  language: Language;
+  target: SpokenTarget;
   preset: Partial<SatellitePreset>;
   latestPower: Partial<NasaPowerDaily>;
   farmerQuestion?: string;
+  /** Crop passed explicitly by the client (crop lens chips) — wins over NLU. */
+  explicitCrop: CanonicalCrop | null;
   cropIntent: ExtractedCropIntent | null;
 }
 
-// Attaches the code-computed verdict and runs the TTS provider chain.
-// Used for both the Gemini path and the offline fallback path so a Gemini
-// outage still yields a voiced template response.
+// Attaches the code-computed verdict, the hardcoded closing line, and runs
+// the TTS provider chain. Used for both the Gemini path and the offline
+// fallback path so a Gemini outage still yields a voiced template response.
 async function attachVerdictAndAudio(
   resp: SoilVoiceResponse,
   ctx: FinalizeContext
 ): Promise<SoilVoiceResponse> {
-  const { language, preset, latestPower, farmerQuestion, cropIntent } = ctx;
+  const { target, preset, latestPower, farmerQuestion, explicitCrop, cropIntent } = ctx;
+  const addisTarget = isAddisLanguageCode(target) ? target : null;
 
-  if (farmerQuestion) {
-    const crop = cropIntent?.crop ?? matchCropFromText(farmerQuestion);
-    const intent = cropIntent?.intent ?? inferIntentFromText(farmerQuestion);
+  if (farmerQuestion || explicitCrop) {
+    const crop =
+      explicitCrop ??
+      cropIntent?.crop ??
+      matchCropFromText(farmerQuestion ?? "", addisTarget);
+    const intent =
+      cropIntent?.intent ?? inferIntentFromText(farmerQuestion ?? "");
     resp.crop = crop;
     resp.intent = intent;
     if (crop) {
@@ -199,19 +263,34 @@ async function attachVerdictAndAudio(
     }
   }
 
+  // Hardcoded closing line, appended in code for the supported languages.
+  if (addisTarget && resp.firstPersonScript) {
+    resp.firstPersonScript = appendClosingLine(
+      resp.firstPersonScript,
+      SUPPORTED_LANGUAGES[addisTarget].closingLine
+    );
+  }
+
   const script = resp.firstPersonScript ?? "";
   let audioBase64: string | null = null;
   let audioProvider: AudioProvider = "none";
 
   if (script.trim()) {
-    if (language === "Amharic") {
-      const addis = await synthesizeAmharic(script);
-      if (addis) {
-        audioBase64 = `data:audio/mpeg;base64,${addis.audioBase64}`;
-        audioProvider = "addis";
+    if (addisTarget) {
+      const voiceId = await resolveVoiceForLanguage(addisTarget);
+      if (voiceId) {
+        const addis = await synthesizeAddis(script, {
+          language: addisTarget,
+          voiceId,
+        });
+        if (addis) {
+          audioBase64 = `data:audio/mpeg;base64,${addis.audioBase64}`;
+          audioProvider = "addis";
+        }
       }
+      // No voices listed or synthesis failed → Gemini (am only) / browser.
     }
-    if (!audioBase64) {
+    if (!audioBase64 && (target === "am" || target === "en" || target === "es")) {
       const geminiAudio = await synthesizeSpeechWithGemini(script);
       if (geminiAudio) {
         audioBase64 = geminiAudio;
@@ -219,7 +298,7 @@ async function attachVerdictAndAudio(
       }
     }
     if (!audioBase64) {
-      // Client speaks via speechSynthesis (am-ET, then en).
+      // Client speaks via speechSynthesis in the active language, then en.
       audioProvider = "browser";
     }
   }
@@ -238,36 +317,66 @@ export async function POST(req: NextRequest) {
       language = "English",
       farmerPriorities,
       farmerQuestion,
+      crop: rawCrop,
+      lat: rawLat,
+      lon: rawLon,
+      locationSource: rawLocationSource,
     } = body;
 
+    const target = normalizeLanguage(language);
     const apiKey = process.env.GEMINI_API_KEY;
 
     const nd = nasaData ?? {};
     const preset = nd.preset ?? {};
     const lp = nd.latestPower ?? {};
 
-    // Crop/intent extraction runs in parallel with the main analysis.
+    const explicitCrop: CanonicalCrop | null =
+      typeof rawCrop === "string" &&
+      (CANONICAL_CROPS as readonly string[]).includes(rawCrop)
+        ? (rawCrop as CanonicalCrop)
+        : null;
+
+    const lat = Number(rawLat);
+    const lon = Number(rawLon);
+    const hasCoords = Number.isFinite(lat) && Number.isFinite(lon);
+    const locationSource =
+      typeof rawLocationSource === "string" &&
+      ["live", "saved", "chosen", "demo"].includes(rawLocationSource)
+        ? rawLocationSource
+        : undefined;
+
+    // Crop/intent extraction + region resolution run in parallel with the
+    // main analysis — region is cached server-side after the first lookup.
     const cropIntentPromise: Promise<ExtractedCropIntent | null> =
       farmerQuestion && apiKey
         ? extractCropIntentWithGemini(farmerQuestion, apiKey)
         : Promise.resolve(null);
+    const regionPromise: Promise<RegionResult | null> = hasCoords
+      ? reverseGeocodeRegion(lat, lon).catch(() => null)
+      : Promise.resolve(null);
+
+    const finalize = async (
+      resp: SoilVoiceResponse
+    ): Promise<SoilVoiceResponse> => {
+      const region = await regionPromise;
+      const finalized = await attachVerdictAndAudio(resp, {
+        target,
+        preset,
+        latestPower: lp,
+        farmerQuestion,
+        explicitCrop,
+        cropIntent: await cropIntentPromise,
+      });
+      finalized.language = isAddisLanguageCode(target) ? target : language;
+      finalized.regionName = region?.regionName ?? null;
+      if (locationSource) finalized.locationSource = locationSource;
+      return finalized;
+    };
 
     if (!apiKey) {
       console.warn("GEMINI_API_KEY not configured, using fallback response");
-      const fallback = getFallbackResponse(
-        language as Language,
-        preset,
-        farmerQuestion
-      );
-      return NextResponse.json(
-        await attachVerdictAndAudio(fallback, {
-          language: language as Language,
-          preset,
-          latestPower: lp,
-          farmerQuestion,
-          cropIntent: await cropIntentPromise,
-        })
-      );
+      const fallback = getFallbackResponse(target, preset, farmerQuestion);
+      return NextResponse.json(await finalize(fallback));
     }
 
     // Build NASA data summary string
@@ -287,12 +396,7 @@ export async function POST(req: NextRequest) {
       ? `Water Conservation: ${farmerPriorities.waterConservation}/100, Soil Nitrogen: ${farmerPriorities.soilNitrogen}/100, Cash Income: ${farmerPriorities.cashIncome}/100, Livestock Forage: ${farmerPriorities.livestockForage}/100`
       : "Balanced priorities (Water: 70, Nitrogen: 50, Income: 60, Forage: 40)";
 
-    const prompt = buildPrompt(
-      nasaSummary,
-      language as Language,
-      priorityStr,
-      farmerQuestion
-    );
+    const prompt = buildPrompt(nasaSummary, target, priorityStr, farmerQuestion);
 
     // Build Gemini request payload
     const parts: Array<Record<string, unknown>> = [{ text: prompt }];
@@ -347,7 +451,7 @@ export async function POST(req: NextRequest) {
       return null;
     })();
 
-    const [mainParsed, cropIntent] = await Promise.all([
+    const [mainParsed] = await Promise.all([
       mainAnalysisPromise,
       cropIntentPromise,
     ]);
@@ -355,11 +459,7 @@ export async function POST(req: NextRequest) {
     let parsedResult = mainParsed;
     if (!parsedResult) {
       console.warn("Using fallback agronomic response");
-      parsedResult = getFallbackResponse(
-        language as Language,
-        preset,
-        farmerQuestion
-      );
+      parsedResult = getFallbackResponse(target, preset, farmerQuestion);
     }
 
     // Attach strategy default weights
@@ -375,18 +475,10 @@ export async function POST(req: NextRequest) {
       parsedResult.mood = "stressed";
     }
 
-    return NextResponse.json(
-      await attachVerdictAndAudio(parsedResult, {
-        language: language as Language,
-        preset,
-        latestPower: lp,
-        farmerQuestion,
-        cropIntent,
-      })
-    );
+    return NextResponse.json(await finalize(parsedResult));
   } catch (err: unknown) {
     console.error("Soil Voice handler error:", err);
-    const fallback = getFallbackResponse("English", {});
+    const fallback = getFallbackResponse("en", {});
     fallback.audioBase64 = null;
     fallback.audioProvider = "none";
     return NextResponse.json(
@@ -397,7 +489,7 @@ export async function POST(req: NextRequest) {
 }
 
 function getFallbackResponse(
-  language: Language,
+  target: SpokenTarget,
   preset: Record<string, unknown>,
   farmerQuestion?: string
 ): SoilVoiceResponse {
@@ -418,32 +510,39 @@ function getFallbackResponse(
     }
   }
 
-  const scripts: Record<Language, { script: string; subtitles: string }> = {
-    English: {
-      script: firstPerson,
-      subtitles: firstPerson,
-    },
-    Amharic: {
-      script:
-        "እኔ ከእግርዎ በታች ያለሁት ህያው አፈር ነኝ፤ በናሳ SMAP መረጃ መሰረት በስሬ የቀረኝ የውሃ መጠን 42 ሚሊሜትር ብቻ ነው። ላንድሳት እርቃኔን በከፍተኛ የባዶ አፈር መረጃ ሲያሳይ፣ ኢኮስትረስ የሙቀት ጭንቀቴን ይመሰክራል። ዝናቡ የላይኛውን ለም አፈሬን ጠራርጎ ከመውሰዱ በፊት በህያው ሰብል ሸፍኑኝ።",
-      subtitles:
-        "I am the living soil beneath your feet; according to NASA SMAP I hold only 42 mm of root-zone moisture. Landsat reveals my bare skin under intense exposure as ECOSTRESS detects severe heat stress. Cover me with living crops before the rain carries my fertile topsoil away.",
-    },
-    "Afaan Oromo": {
-      script:
-        "Ani biyyoo jireenya qabu miila kee jala jiru dha; akka ragaan NASA SMAP agarsiisutti bishaan hidda kootii keessa jiru miliimeetira 42 qofa. Landsat akka qaamni koo qullaa jiru mul'isa, ECOSTRESS ammoo ho'a cimaa akka natti jiru mirkaneessa. Osoo baraan biyyoofi gabbina koo hin dhiqin dura biqiltuun na uffisaa.",
-      subtitles:
-        "I am the living soil beneath your feet; NASA SMAP data shows my root-zone moisture is down to 42 mm. Landsat exposes my bare ground and ECOSTRESS shows intense heat stress. Clothe me with green cover before torrential rains wash my vitality away.",
-    },
-    Spanish: {
+  // Deterministic per-language templates — TODO verify with native speakers
+  // (languageConfig owns the supported-language copies).
+  const scripts: Record<SpokenTarget, { script: string; subtitles: string }> = {
+    en: { script: firstPerson, subtitles: firstPerson },
+    es: {
       script:
         "Soy el suelo vivo bajo sus pies, agrietado y con solo 42 milímetros de humedad radicular según el satélite NASA SMAP. Landsat detecta mi superficie expuesta con un índice de suelo desnudo crítico mientras ECOSTRESS registra un estrés evaporativo severo. Cúbranme con raíces vivas antes de que las lluvias erosionen lo que me queda de vida.",
       subtitles:
         "I am the living soil beneath your feet, cracked and holding only 42 mm of root-zone moisture according to NASA SMAP. Landsat detects critical bare soil exposure while ECOSTRESS logs severe evaporative stress. Cover me with living roots before rainfall erodes my remaining life.",
     },
+    am: {
+      script: SUPPORTED_LANGUAGES.am.fallbackScript,
+      subtitles: SUPPORTED_LANGUAGES.am.fallbackSubtitles,
+    },
+    om: {
+      script: SUPPORTED_LANGUAGES.om.fallbackScript,
+      subtitles: SUPPORTED_LANGUAGES.om.fallbackSubtitles,
+    },
+    ti: {
+      script: SUPPORTED_LANGUAGES.ti.fallbackScript,
+      subtitles: SUPPORTED_LANGUAGES.ti.fallbackSubtitles,
+    },
+    sid: {
+      script: SUPPORTED_LANGUAGES.sid.fallbackScript,
+      subtitles: SUPPORTED_LANGUAGES.sid.fallbackSubtitles,
+    },
+    wal: {
+      script: SUPPORTED_LANGUAGES.wal.fallbackScript,
+      subtitles: SUPPORTED_LANGUAGES.wal.fallbackSubtitles,
+    },
   };
 
-  const selectedScript = scripts[language] || scripts.English;
+  const selectedScript = scripts[target] || scripts.en;
 
   const fallbackStrategies: [RotationStrategy, RotationStrategy, RotationStrategy] = [
     {
@@ -508,3 +607,6 @@ function getFallbackResponse(
     farmerQuestion,
   };
 }
+
+// Re-exported for tests (TTS sentence cap shared with the closing-line logic).
+export { capTextForTts };

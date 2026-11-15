@@ -10,6 +10,8 @@ import {
   test,
 } from "./helpers";
 import { __clearAddisCacheForTests } from "../src/lib/addisTts";
+import { __clearAddisVoiceCacheForTests } from "../src/lib/addisVoices";
+import { __clearRegionCacheForTests } from "../src/lib/region";
 import { POST as ttsPOST } from "../src/app/api/tts/route";
 import { GET as healthGET } from "../src/app/api/tts/health/route";
 import { POST as soilVoicePOST } from "../src/app/api/soil-voice/route";
@@ -28,9 +30,14 @@ function stubGetReq() {
 
 function resetEnv(): void {
   __clearAddisCacheForTests();
+  __clearAddisVoiceCacheForTests();
+  __clearRegionCacheForTests();
   setEnv("GEMINI_API_KEY", GEMINI_KEY);
   setEnv("ADDIS_API_KEY", ADDIS_KEY);
   setEnv("ADDIS_VOICE_ID", undefined);
+  for (const code of ["AM", "OM", "TI", "SID", "WAL"]) {
+    setEnv(`ADDIS_VOICE_ID_${code}`, undefined);
+  }
 }
 
 const isAddis = (url: string) => url.includes("api.addisassistant.com");
@@ -129,7 +136,7 @@ test("/api/tts: missing text still returns 400", async () => {
 
 // ─── /api/tts/health ────────────────────────────────────────────────────────
 
-test("/api/tts/health: configured+reachable, exactly two response fields, no secrets", async () => {
+test("/api/tts/health: per-language { configured, reachable, voiceCount }, no secrets", async () => {
   resetEnv();
   setFetchHandler((url) => {
     if (isAddisVoices(url)) return jsonResponse({ data: [{ id: "am-hamen" }] });
@@ -137,13 +144,24 @@ test("/api/tts/health: configured+reachable, exactly two response fields, no sec
   });
   const res = await healthGET(stubGetReq());
   const body = await res.json();
-  assert.deepEqual(Object.keys(body).sort(), ["configured", "reachable"]);
-  assert.equal(body.configured, true);
-  assert.equal(body.reachable, true);
+  assert.deepEqual(
+    Object.keys(body).sort(),
+    ["am", "om", "sid", "ti", "wal"],
+    "one health entry per supported Addis language"
+  );
+  for (const code of Object.keys(body)) {
+    assert.deepEqual(
+      Object.keys(body[code]).sort(),
+      ["configured", "reachable", "voiceCount"]
+    );
+    assert.equal(body[code].configured, true);
+    assert.equal(body[code].reachable, true);
+    assert.equal(body[code].voiceCount, 1);
+  }
   assert.ok(!JSON.stringify(body).includes(ADDIS_KEY));
 });
 
-test("/api/tts/health: no key → configured=false, reachable=false, zero upstream calls", async () => {
+test("/api/tts/health: no key → all languages configured=false, zero upstream calls", async () => {
   resetEnv();
   setEnv("ADDIS_API_KEY", undefined);
   setFetchHandler(() => {
@@ -151,10 +169,16 @@ test("/api/tts/health: no key → configured=false, reachable=false, zero upstre
   });
   const res = await healthGET(stubGetReq());
   const body = await res.json();
-  assert.deepEqual(body, { configured: false, reachable: false });
+  for (const code of ["am", "om", "ti", "sid", "wal"]) {
+    assert.deepEqual(body[code], {
+      configured: false,
+      reachable: false,
+      voiceCount: 0,
+    });
+  }
 });
 
-test("/api/tts/health: upstream error → reachable=false", async () => {
+test("/api/tts/health: upstream error → reachable=false per language", async () => {
   resetEnv();
   setFetchHandler((url) => {
     if (isAddisVoices(url)) return jsonResponse({ message: "bad key" }, 401);
@@ -162,7 +186,11 @@ test("/api/tts/health: upstream error → reachable=false", async () => {
   });
   const res = await healthGET(stubGetReq());
   const body = await res.json();
-  assert.deepEqual(body, { configured: true, reachable: false });
+  for (const code of ["am", "om", "ti", "sid", "wal"]) {
+    assert.equal(body[code].configured, true);
+    assert.equal(body[code].reachable, false);
+    assert.equal(body[code].voiceCount, 0);
+  }
 });
 
 // ─── /api/soil-voice ────────────────────────────────────────────────────────

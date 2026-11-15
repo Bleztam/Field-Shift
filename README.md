@@ -102,7 +102,7 @@ Replacing sterile charts with an emotive, game-style AR avatar emerging organica
 ---
 
 ### 3. 🎙️ 3-Tier AI Voice Engine & Two-Way Farmer Dialogue
-- **Amharic TTS via Addis AI (`src/lib/addisTts.ts`)**: Amharic monologues are voiced by the [Addis AI](https://docs.addisassistant.com) Amharic voice API — voices **`am-hamen`** (default) and **`am-simon`**, `mp3_44100` output. Non-Amharic languages keep using Gemini TTS. Provider chain for Amharic: **Addis AI → Gemini TTS → browser `speechSynthesis` (`am-ET`, then platform default/en)**. The active provider is returned on every response as `audioProvider` (`"addis" | "gemini" | "browser" | "none"`).
+- **Multi-language TTS via Addis AI (`src/lib/addisTts.ts` + `src/lib/addisVoices.ts`)**: Monologues are voiced by the [Addis AI](https://docs.addisassistant.com) voice API in any supported language — **`am`, `om`, `ti`, `sid`, `wal`** — with `mp3_44100` output. Voice selection per language: `ADDIS_VOICE_ID_<CODE>` env override, otherwise the **first voice returned** by `GET /api/v1/voice/voices?language=<code>` (cached 6 h); no voice IDs are hardcoded except the historical Amharic default `am-hamen`. Provider chain: **Addis AI → Gemini TTS (am/en/es) → browser `speechSynthesis`** in the active language. If no voices exist for a language or synthesis fails, the app degrades to `audioProvider: "browser" | "none"` with on-screen captions — it never crashes.
 - **Gemini for NLU & explanation, code for verdicts**: Gemini only *extracts* `{ crop, intent }` from the farmer's question (schema-validated JSON, with an offline Amharic/English keyword fallback: ጤፍ teff, በቆሎ maize, ሽምብራ chickpea, ስንዴ wheat, ማሽላ sorghum, ቦለቄ/ፈሰስ haricot bean) and *writes* the first-person monologue. The agronomic **verdict (`plant` / `plant_with_caution` / `wait`), `reasons`, and `confidence` are computed deterministically in code (`src/lib/cropIntent.ts`) from NASA metrics — the LLM never decides the verdict.**
 - **Gemini TTS Voice Synthesis**: Fallback voice path using Google DeepMind's `gemini-3.8-flash-tts` model ("Fenrir" deep earthy voice timbre) encoded with a 24 kHz 16-bit mono RIFF/WAV header.
 - **3-Tier Resilient Audio Hook (`useSoilVoice.ts`)**:
@@ -110,13 +110,27 @@ Replacing sterile charts with an emotive, game-style AR avatar emerging organica
   2. *Tier 2 (Native Android APK Fallback)*: Integrates with `Capacitor.Plugins.TextToSpeech` for offline hardware-level voice generation.
   3. *Tier 3 (Browser SpeechSynthesis)*: Native Web Speech API fallback.
 - **Two-Way Conversational Soil**: Farmers can ask questions via Speech-to-Text (`SpeechRecognition`, locale `am-ET` when Amharic is selected, with feature detection and automatic fallback to typed input + quick-question chips) or interactive quick-question chips (e.g., *"Why are you cracking?"*, *"What can I plant that still makes cash?"*). The soil responds in first-person citing its live NASA telemetry.
-- **Multilingual Support**: Real-time generation and translation across **English, Amharic, Afaan Oromo, and Spanish**.
-- **Compact Glassmorphic Speech Bubble (`SoilSpeaker.tsx`)**: High-contrast, 2-line floating dialogue bubble with synchronized auto-scrolling subtitles that leaves 75%+ of the camera viewport completely unobstructed.
+- **Location-driven language**: the spoken language defaults to the most likely supported language at the farmer's location (see "📍 Location-Driven Language" below) and can be overridden any time from the top-bar language chip.
+- **Word-by-word caption bubble (`SoilCaptions.tsx`)**: High-contrast captions in the active language (large) + English subtitles (toggleable), synchronized with the audio, leaving the camera viewport unobstructed.
+
+### 3a. 📍 Location-Driven Language (`src/lib/location.ts`, `src/lib/region.ts`, `src/lib/languageConfig.ts`)
+
+The app always resolves the farmer's location and defaults the spoken language to the most likely **Addis-supported** language there; the farmer can override it any time (top-bar language chip → big-button sheet, persisted in `localStorage`).
+
+**Location resolution order** (source is always shown honestly in the top bar and Why sheet — saved/chosen is never presented as live):
+1. **`live`** — browser geolocation (one friendly request, 10 s timeout, `enableHighAccuracy: false`).
+2. **`saved`** — last known fix from `localStorage`, labeled "saved location".
+3. **`chosen`** — big-button region picker (Amharic + English). Each region maps to a *representative* lat/lon for NASA POWER, marked **approximate, TODO verify**.
+4. The hardcoded Rift Valley plot remains only as a **dev/demo** preset (`?nocamera=1` / inspector mode).
+
+**Region → language**: coordinates are reverse-geocoded server-side (`/api/region`) via Nominatim (proper `User-Agent`, 6 s timeout, ≤1 req/s, results cached 6 h at 2-decimal coords). On any failure a **coarse bounding-box** fallback classifies the main regions with `confidence: "low"` — precision is never claimed. Defaults: **Oromia → `om`, Amhara → `am`, Addis Ababa → `am` (one-tap `om` offered), Tigray → `ti`, Sidama → `sid`, South/Central (Wolaita) → `wal`**; Afar/Somali/Gambella/Benishangul/others → `am` with a note that their local language is not yet available for speech. Final language = **saved farmer choice > region default > `am`**.
+
+**Known limits**: the region↔language map is approximate (Ethiopia is multilingual everywhere); the coarse bbox cannot separate interleaved boundaries (esp. Oromia / South Ethiopia); **all non-Amharic UI strings, crop names, and the hardcoded "confirm with your local development agent" closing line are machine-assisted drafts pending native-speaker review (TODO verify)** — for `ti`/`sid`/`wal` the prose fields currently hold honest English placeholders rather than unreviewed translations. Gemini's monologue quality is also weaker for `om`/`ti`/`sid`/`wal`; when it fails, a deterministic per-language template (same TODO status) takes over.
 
 #### 💳 Addis AI Cost & Privacy Notes
 - Addis AI bills **per minute of generated audio**, so the integration minimizes calls: text is capped at **400 chars / 3 sentences**, responses are **cached in-memory server-side** by content hash (repeat questions are free), retries are limited to **one idempotent replay** (same `client_request_id`), and the **last spoken answer is cached in `localStorage`** on the device for offline replay.
 - The `ADDIS_API_KEY` lives only in `.env.local` (gitignored via `.env*`), is sent solely as an `x-api-key` header from server-side API routes, and is never logged or returned to clients. Dev servers log `credits_remaining` after each generation for cost monitoring (server console only).
-- Admin health probe: `GET /api/tts/health` → `{ "configured": boolean, "reachable": boolean }` (nothing else).
+- Admin health probe: `GET /api/tts/health` → per-language `{ "am|om|ti|sid|wal": { "configured", "reachable", "voiceCount" } }` (nothing else — never the key or upstream payloads).
 
 ---
 
@@ -234,11 +248,16 @@ Create a `.env.local` file in the root directory (see `.env.example`):
 # Google Gemini API Key for vision analysis, NLU & fallback TTS
 GEMINI_API_KEY="your_gemini_api_key_here"
 
-# Addis AI API Key for Amharic TTS (server-side only — never NEXT_PUBLIC_)
+# Addis AI API Key for TTS in am/om/ti/sid/wal (server-side only — never NEXT_PUBLIC_)
 ADDIS_API_KEY="your_addis_api_key_here"
 
-# Addis AI voice: "am-hamen" (default) or "am-simon"
+# Addis AI voice overrides per language (optional — default is the first
+# voice the API lists for that language; Amharic keeps "am-hamen")
 ADDIS_VOICE_ID="am-hamen"
+ADDIS_VOICE_ID_OM=
+ADDIS_VOICE_ID_TI=
+ADDIS_VOICE_ID_SID=
+ADDIS_VOICE_ID_WAL=
 
 # (Optional) Backend base URL for native mobile APK builds
 NEXT_PUBLIC_API_BASE_URL="http://localhost:3000"

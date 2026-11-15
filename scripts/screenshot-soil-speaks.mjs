@@ -15,6 +15,8 @@ const shots = [
   ["offline", "/?nocamera=1&demo=offline&mood=stressed"],
   ["error", "/?nocamera=1&demo=error&mood=hopeful"],
   ["why-sheet", "/?nocamera=1&demo=speaking&sheet=why&mood=hopeful"],
+  ["language-sheet", "/?nocamera=1&sheet=lang"],
+  ["region-picker", "/?nocamera=1&sheet=region"],
   ["onboarding", "/?nocamera=1&onboarding=1"],
 ];
 

@@ -1,10 +1,11 @@
 "use client";
 
 import React, { useRef } from "react";
-import { X, Satellite, Database, Droplets, FlaskConical, ArrowLeftRight } from "lucide-react";
+import { X, Satellite, Database, Droplets, FlaskConical, ArrowLeftRight, MapPin, Languages } from "lucide-react";
 import { FusedFieldData, SoilVoiceResponse } from "@/lib/types";
 import { SeasonInfo } from "@/lib/soilSeason";
 import { SOIL_STRINGS } from "@/lib/soilUiStrings";
+import { LocationSource } from "@/lib/location";
 import { VerdictGlyph } from "./icons";
 
 interface WhySheetProps {
@@ -14,11 +15,23 @@ interface WhySheetProps {
   soilVoice: SoilVoiceResponse | null;
   season: SeasonInfo;
   presetName: string;
+  /** How the coordinates were obtained — labeled honestly, never as "live"
+      unless the GPS just provided them. */
+  locationSource: LocationSource | null;
+  regionName: string | null;
+  languageLabel: string;
   onSwitchPreset: () => void;
   onOpenInspector: () => void;
 }
 
 const CONFIDENCE_PCT = { low: 33, medium: 66, high: 100 } as const;
+
+const SOURCE_LABEL: Record<LocationSource, string> = {
+  live: "live GPS",
+  saved: "saved location",
+  chosen: "chosen region (approximate)",
+  demo: "demo plot",
+};
 
 export default function WhySheet({
   open,
@@ -27,6 +40,9 @@ export default function WhySheet({
   soilVoice,
   season,
   presetName,
+  locationSource,
+  regionName,
+  languageLabel,
   onSwitchPreset,
   onOpenInspector,
 }: WhySheetProps) {
@@ -97,6 +113,32 @@ export default function WhySheet({
               {power.ALLSKY_SFC_SW_DWN.toFixed(1)} MJ/m² · RH {power.RH2M.toFixed(0)}%
             </p>
           )}
+        </div>
+
+        {/* location + language provenance */}
+        <div className="why-card">
+          <h4>Location &amp; language</h4>
+          <div className="flex items-center gap-2 text-sm">
+            <MapPin className="w-4 h-4" style={{ color: "var(--soil-sienna)" }} />
+            <span className="font-semibold">{regionName ?? "Unknown region"}</span>
+            <span className="text-xs font-bold px-2 py-0.5 rounded-full"
+              style={{
+                background:
+                  locationSource === "live"
+                    ? "rgba(63,125,58,0.14)"
+                    : "rgba(201,130,43,0.15)",
+                color:
+                  locationSource === "live"
+                    ? "var(--soil-leaf)"
+                    : "var(--soil-amber)",
+              }}>
+              {locationSource ? SOURCE_LABEL[locationSource] : "not set"}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 mt-1.5 text-sm">
+            <Languages className="w-4 h-4" style={{ color: "var(--soil-water)" }} />
+            <span className="font-semibold">{languageLabel}</span>
+          </div>
         </div>
 
         {/* season + water */}

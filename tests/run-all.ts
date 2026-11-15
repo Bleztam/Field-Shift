@@ -3,6 +3,7 @@ import { installFetchMock, runAll } from "./helpers";
 import "./addis-tts.test";
 import "./crop-intent.test";
 import "./api-routes.test";
+import "./location-language.test";
 import "./static-checks.test";
 
 installFetchMock();

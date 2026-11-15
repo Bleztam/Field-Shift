@@ -39,33 +39,40 @@ test("speech recognition unsupported → text tray + crop chips remain, never cr
   assert.ok(tray.includes("<input"), "text input fallback exists");
 });
 
-test("acceptance: geolocation denied — app never calls browser geolocation", () => {
+test("geolocation is confined to the location module with graceful denial", () => {
+  // Location-driven language (FS-3) requires one friendly geolocation path.
+  // It must live ONLY in src/lib/location.ts, with denial resolving to null
+  // (saved location / region picker take over — the app never crashes).
   const offenders = listSourceFiles(SRC).filter((f) =>
-    readFileSync(f, "utf8").includes("geolocation")
+    readFileSync(f, "utf8").includes("navigator.geolocation")
   );
   assert.deepEqual(
-    offenders,
-    [],
-    `preset-based plots only; unexpected geolocation usage in: ${offenders.join(", ")}`
+    offenders.map((f) => relative(ROOT, f)),
+    ["src/lib/location.ts"],
+    `geolocation must be confined to src/lib/location.ts; found: ${offenders.join(", ")}`
   );
+  const loc = readFileSync(join(SRC, "lib/location.ts"), "utf8");
+  assert.ok(loc.includes("enableHighAccuracy: false"), "battery-friendly fix");
+  assert.ok(loc.includes("resolve(null)"), "denial resolves null, never throws");
 });
 
-test("secret hygiene: ADDIS_API_KEY and x-api-key appear only in the server TTS client", () => {
+test("secret hygiene: ADDIS_API_KEY and x-api-key appear only in the server TTS modules", () => {
   const files = listSourceFiles(SRC).filter((f) => f.endsWith(".ts") || f.endsWith(".tsx"));
+  const ADDIS_SERVER_MODULES = ["src/lib/addisTts.ts", "src/lib/addisVoices.ts"];
   const keyRefs = files.filter((f) =>
     readFileSync(f, "utf8").includes("ADDIS_API_KEY")
   );
   assert.deepEqual(
-    keyRefs.map((f) => relative(ROOT, f)),
-    ["src/lib/addisTts.ts"]
+    keyRefs.map((f) => relative(ROOT, f)).sort(),
+    [...ADDIS_SERVER_MODULES].sort()
   );
 
   const headerRefs = files.filter((f) =>
     readFileSync(f, "utf8").includes("x-api-key")
   );
   assert.deepEqual(
-    headerRefs.map((f) => relative(ROOT, f)),
-    ["src/lib/addisTts.ts"]
+    headerRefs.map((f) => relative(ROOT, f)).sort(),
+    [...ADDIS_SERVER_MODULES].sort()
   );
 
   const hardcoded = files.filter((f) =>

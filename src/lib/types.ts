@@ -80,6 +80,12 @@ export interface SoilVoiceResponse {
   intent?: string;
   mood?: SoilMood;
   farmerQuestion?: string;
+  /** Echo of the resolved spoken language (Addis code or legacy name). */
+  language?: string;
+  /** Region resolved from the farmer's coordinates, when provided. */
+  regionName?: string | null;
+  /** How the client obtained the coordinates: live | saved | chosen | demo. */
+  locationSource?: string;
 }
 
 export type Language = "Amharic" | "Afaan Oromo" | "English" | "Spanish";

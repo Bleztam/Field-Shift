@@ -3,6 +3,11 @@
 // The LLM may extract which crop the farmer asked about, but it NEVER
 // decides whether planting is advisable.
 import { NasaPowerDaily, SatellitePreset } from "./types";
+import {
+  AddisLanguageCode,
+  isAddisLanguageCode,
+  SUPPORTED_LANGUAGES,
+} from "./languageConfig";
 
 export const CANONICAL_CROPS = [
   "teff",
@@ -42,16 +47,31 @@ const INTENT_KEYWORDS: Record<Exclude<FarmerIntent, "general">, string[]> = {
   plant_check: ["plant", "sow", "grow", "seed", "crop", "ዘር", "ትከል"],
 };
 
-export function matchCropFromText(text: string): CanonicalCrop | null {
+export function matchCropFromText(
+  text: string,
+  language?: AddisLanguageCode | string | null
+): CanonicalCrop | null {
   const lower = (text ?? "").toLowerCase();
   if (!lower) return null;
+  // Merge the base (English + Amharic) table with the active language's
+  // local crop names. TODO verify non-Amharic glosses (see languageConfig).
+  const merged: Record<string, string[]> = {};
+  for (const [crop, words] of Object.entries(CROP_KEYWORDS)) {
+    merged[crop] = [...words];
+  }
+  if (language && isAddisLanguageCode(language)) {
+    const local = SUPPORTED_LANGUAGES[language].cropNames;
+    for (const [crop, words] of Object.entries(local)) {
+      merged[crop] = [...(merged[crop] ?? []), ...words];
+    }
+  }
   // Longest keyword first so "haricot bean" beats "bean".
-  const entries = (Object.entries(CROP_KEYWORDS) as [CanonicalCrop, string[]][]).map(
+  const entries = (Object.entries(merged) as [CanonicalCrop, string[]][]).map(
     ([crop, words]) => [crop, [...words].sort((a, b) => b.length - a.length)] as const
   );
   for (const [crop, words] of entries) {
     for (const word of words) {
-      if (lower.includes(word.toLowerCase())) return crop;
+      if (word && lower.includes(word.toLowerCase())) return crop;
     }
   }
   return null;

@@ -6,13 +6,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FusedFieldData,
-  Language,
   SoilMood,
   SoilVoiceResponse,
 } from "./types";
 import { useSoilVoice, loadLastSoilAudio } from "./useSoilVoice";
-import { mapLanguageToCode } from "./languageCodes";
 import { SOIL_STRINGS } from "./soilUiStrings";
+import {
+  AddisLanguageCode,
+  SUPPORTED_LANGUAGES,
+} from "./languageConfig";
+import { FarmerLocation } from "./location";
 import { vibrate, HAPTIC_ADVICE, HAPTIC_PRESS, HAPTIC_RELEASE } from "./haptics";
 import { SoilUiState } from "@/app/components/soil/SoilFace";
 
@@ -46,6 +49,8 @@ interface DemoOverrides {
   state?: SoilUiState;
   mood?: SoilMood;
   why?: boolean;
+  langSheet?: boolean;
+  regionSheet?: boolean;
   onboarding?: boolean;
   nocamera?: boolean;
 }
@@ -64,6 +69,8 @@ function readDemoOverrides(): DemoOverrides {
         ? mood
         : undefined,
     why: p.get("sheet") === "why",
+    langSheet: p.get("sheet") === "lang",
+    regionSheet: p.get("sheet") === "region",
     onboarding: p.get("onboarding") === "1",
     nocamera: p.get("nocamera") === "1",
   };
@@ -71,15 +78,20 @@ function readDemoOverrides(): DemoOverrides {
 
 interface UseSoilConversationArgs {
   fieldData: FusedFieldData | null;
-  language: Language;
+  /** Active spoken language (Addis code). */
+  language: AddisLanguageCode;
   getImage: () => string | null;
+  /** Current farmer location for the soil-voice payload (null when unset). */
+  getLocation?: () => Pick<FarmerLocation, "lat" | "lon" | "source"> | null;
 }
 
 export function useSoilConversation({
   fieldData,
   language,
   getImage,
+  getLocation,
 }: UseSoilConversationArgs) {
+  const langStrings = SUPPORTED_LANGUAGES[language];
   const [uiState, setUiState] = useState<SoilUiState>("idle");
   const [mood, setMood] = useState<SoilMood>("stressed");
   const [soilVoice, setSoilVoice] = useState<SoilVoiceResponse | null>(null);
@@ -108,6 +120,11 @@ export function useSoilConversation({
       ),
     []
   );
+
+  const getLocationRef = useRef(getLocation);
+  useEffect(() => {
+    getLocationRef.current = getLocation;
+  }, [getLocation]);
 
   // ── Online/offline tracking ──
   useEffect(() => {
@@ -149,12 +166,12 @@ export function useSoilConversation({
       const recognition = new Ctor();
       recognition.continuous = false;
       recognition.interimResults = false;
-      recognition.lang = mapLanguageToCode(language);
+      recognition.lang = langStrings.speechRecognitionLang;
       recognitionRef.current = recognition;
     } catch {
       recognitionRef.current = null;
     }
-  }, [srSupported, language]);
+  }, [srSupported, langStrings]);
 
   // ── Thinking hum (no TTS credits, soft WebAudio drone) ──
   const stopHum = useCallback(() => {
@@ -269,7 +286,7 @@ export function useSoilConversation({
 
   // ── Ask the soil ──
   const askQuestion = useCallback(
-    async (question: string) => {
+    async (question: string, explicitCrop?: string | null) => {
       const q = question.trim();
       if (!q) return;
       setLastQuestion(q);
@@ -278,6 +295,7 @@ export function useSoilConversation({
       startHum();
 
       try {
+        const loc = getLocationRef.current?.() ?? null;
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), SOIL_VOICE_TIMEOUT_MS);
         const res = await fetch("/api/soil-voice", {
@@ -289,6 +307,10 @@ export function useSoilConversation({
             nasaData: fieldData,
             language,
             farmerQuestion: q,
+            ...(explicitCrop ? { crop: explicitCrop } : {}),
+            ...(loc
+              ? { lat: loc.lat, lon: loc.lon, locationSource: loc.source }
+              : {}),
           }),
         });
         clearTimeout(timer);
@@ -372,10 +394,10 @@ export function useSoilConversation({
   let captionAm = "";
   let captionEn = "";
   if (effectiveState === "listening") {
-    captionAm = SOIL_STRINGS.listening.am;
+    captionAm = langStrings.listening;
     captionEn = SOIL_STRINGS.listening.en;
   } else if (effectiveState === "thinking") {
-    captionAm = SOIL_STRINGS.thinking.am;
+    captionAm = langStrings.thinking;
     captionEn = SOIL_STRINGS.thinking.en;
   } else if (uiState === "offline" && cachedCaption) {
     captionAm = cachedCaption;
@@ -384,7 +406,7 @@ export function useSoilConversation({
     captionAm = soilVoice.firstPersonScript;
     captionEn = soilVoice.englishSubtitles;
   } else {
-    captionAm = SOIL_STRINGS.greeting.am;
+    captionAm = langStrings.greeting;
     captionEn = SOIL_STRINGS.greeting.en;
   }
 
