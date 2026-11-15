@@ -136,12 +136,12 @@ test("contrast: theme text pairs meet WCAG AA (4.5:1), captions approach AAA", (
     `cream on chip scrim over white ${contrast(cream, chip).toFixed(2)} should be AAA`
   );
   const themeCss = readFileSync(join(SRC, "app/soil-theme.css"), "utf8");
-  const pillBlock = themeCss.match(/\.soil-pill\s*\{[^}]+\}/s)?.[0] ?? "";
+  const pillBlock = themeCss.match(/\.soil-pill\s*\{[^}]+\}/)?.[0] ?? "";
   assert.ok(
     pillBlock.includes("scrim-strong"),
     ".soil-pill must use the strong scrim for text contrast"
   );
-  const cropBlock = themeCss.match(/\.crop-chip\s*\{[^}]+\}/s)?.[0] ?? "";
+  const cropBlock = themeCss.match(/\.crop-chip\s*\{[^}]+\}/)?.[0] ?? "";
   assert.ok(
     cropBlock.includes("scrim-strong"),
     ".crop-chip must use the strong scrim for text contrast"

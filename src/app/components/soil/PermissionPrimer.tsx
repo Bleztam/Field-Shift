@@ -5,13 +5,15 @@ import { Camera } from "lucide-react";
 import { SOIL_STRINGS } from "@/lib/soilUiStrings";
 
 interface PermissionPrimerProps {
-  /** allow=true → mount camera; false → continue with illustrated ground. */
-  onDone: (allowCamera: boolean) => void;
+  /** Fired when the farmer dismisses the primer (either button). */
+  onDone: () => void;
 }
 
 /**
  * First-launch permission primer: one big icon, short AM+EN copy, one primary
- * button. Skipping is graceful — the illustrated field becomes the backdrop.
+ * button. The camera is always attempted once the primer is dismissed — the
+ * browser permission prompt is the real gate, and a denial gracefully keeps
+ * the illustrated field as the backdrop.
  */
 export default function PermissionPrimer({ onDone }: PermissionPrimerProps) {
   return (
@@ -30,7 +32,7 @@ export default function PermissionPrimer({ onDone }: PermissionPrimerProps) {
         <button
           type="button"
           className="primer-button"
-          onClick={() => onDone(true)}
+          onClick={() => onDone()}
         >
           <span className="soil-am" lang="am">{SOIL_STRINGS.primerAllow.am}</span>
           {" · "}
@@ -38,7 +40,7 @@ export default function PermissionPrimer({ onDone }: PermissionPrimerProps) {
         </button>
         <button
           type="button"
-          onClick={() => onDone(false)}
+          onClick={() => onDone()}
           className="mt-3 text-sm font-bold underline underline-offset-4 opacity-70 py-2 px-4"
         >
           <span className="soil-am" lang="am">{SOIL_STRINGS.primerSkip.am}</span>

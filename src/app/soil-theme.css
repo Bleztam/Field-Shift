@@ -34,6 +34,10 @@
   font-family: var(--font-rounded);
   color: var(--soil-cream);
   background: var(--soil-deep);
+  /* Mobile-first full viewport: 100dvh tracks the visible area as browser
+     chrome hides/shows; fixed inset-0 alone uses the layout viewport. */
+  height: 100dvh;
+  width: 100%;
 }
 .soil-am {
   font-family: var(--font-ethiopic);

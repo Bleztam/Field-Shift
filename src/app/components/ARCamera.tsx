@@ -46,10 +46,18 @@ export default function ARCamera({ onFrame, onStatus, forceFallback }: ARCameraP
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: 1280, height: 720 },
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
         audio: false,
       });
       streamRef.current = stream;
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        track.onended = () => reportStatus("unavailable");
+      }
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.play().catch(() => {});
@@ -114,12 +122,14 @@ export default function ARCamera({ onFrame, onStatus, forceFallback }: ARCameraP
       ) : (
         <IllustratedGround />
       )}
-      {/* Soft warm scrim so captions stay sun-readable over bright scenes */}
+      {/* Soft warm scrim + edge vignette so captions stay sun-readable;
+          the center stays clear so the real field shows through. */}
       <div
         className="absolute inset-0"
         style={{
           background:
-            "linear-gradient(to bottom, rgba(30,20,15,0.30) 0%, rgba(30,20,15,0) 28%, rgba(30,20,15,0) 55%, rgba(30,20,15,0.42) 100%)",
+            "linear-gradient(to bottom, rgba(30,20,15,0.30) 0%, rgba(30,20,15,0) 28%, rgba(30,20,15,0) 55%, rgba(30,20,15,0.42) 100%), " +
+            "radial-gradient(ellipse at center, rgba(30,20,15,0) 58%, rgba(30,20,15,0.26) 100%)",
         }}
       />
     </div>

@@ -45,7 +45,6 @@ export default function Home() {
   const [whyOpen, setWhyOpen] = useState(false);
   const [textTrayOpen, setTextTrayOpen] = useState(false);
   const [primerDone, setPrimerDone] = useState(true);
-  const [cameraAllowed, setCameraAllowed] = useState(true);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [selectedCropId, setSelectedCropId] = useState<string | null>(null);
   const swipeStartY = useRef<number | null>(null);
@@ -197,11 +196,12 @@ export default function Home() {
       onTouchStart={onRootTouchStart}
       onTouchEnd={onRootTouchEnd}
     >
-      {/* 1 · camera backdrop (illustrated ground when denied/unavailable) */}
+      {/* 1 · live rear-camera backdrop; illustrated ground only when the
+              camera is denied, missing, or the stream fails */}
       <ARCamera
         onFrame={handleFrameCapture}
         onStatus={setCameraStatus}
-        forceFallback={!primerDone || !cameraAllowed || conv.demo.nocamera === true}
+        forceFallback={!primerDone || conv.demo.nocamera === true}
       />
 
       {/* 2 · top status bar */}
@@ -317,8 +317,7 @@ export default function Home() {
       {/* first-launch permission primer */}
       {!primerDone && (
         <PermissionPrimer
-          onDone={(allowCamera) => {
-            setCameraAllowed(allowCamera);
+          onDone={() => {
             setPrimerDone(true);
             try {
               window.localStorage.setItem(ONBOARDED_KEY, "1");
