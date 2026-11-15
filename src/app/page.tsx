@@ -21,8 +21,10 @@ import {
   Language,
   SoilVoiceResponse,
 } from "@/lib/types";
+import { useSoilVoice } from "@/lib/useSoilVoice";
 import ARCamera from "./components/ARCamera";
 import NASAGridOverlay from "./components/NASAGridOverlay";
+import ArGroundCanvas from "./components/ArGroundCanvas";
 import SoilSpeaker from "./components/SoilSpeaker";
 import PrioritySliders from "./components/PrioritySliders";
 import StrategyDrawer from "./components/StrategyDrawer";
@@ -47,8 +49,10 @@ export default function Home() {
   const [soilVoice, setSoilVoice] = useState<SoilVoiceResponse | null>(null);
   const [isLoadingNasa, setIsLoadingNasa] = useState(false);
   const [isLoadingVoice, setIsLoadingVoice] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
+
+  // ── 3-Tier Soil Voice & Audio Frequency Hook ──
+  const { speakSoil, stopSoil, isSpeaking, frequencyData } = useSoilVoice();
 
   // ── Fetch NASA POWER + Preset Data ──
   const fetchNasaData = useCallback(async (pid: string) => {
@@ -119,13 +123,19 @@ export default function Home() {
       });
       const data: SoilVoiceResponse = await res.json();
       setSoilVoice(data);
-      setIsSpeaking(true); // Auto-play speech when soil speaks
+
+      // Trigger 3-tier speech synthesis (Tier 1: Gemini Audio WAV, Tier 2: Capacitor Native, Tier 3: Browser)
+      await speakSoil({
+        text: data.firstPersonScript,
+        language,
+        audioBase64: data.audioBase64,
+      });
     } catch (err) {
       console.error("Soil Voice error:", err);
     } finally {
       setIsLoadingVoice(false);
     }
-  }, [fieldData, getOrGenerateImage, language, priorities]);
+  }, [fieldData, getOrGenerateImage, language, priorities, speakSoil]);
 
   // ── Try real camera first, fall back to simulate ──
   useEffect(() => {
@@ -150,7 +160,7 @@ export default function Home() {
   return (
     <div className="h-dvh w-full bg-black text-white overflow-hidden flex flex-col font-sans select-none">
       {/* ── Top Bar ── */}
-      <header className="relative z-40 flex items-center justify-between px-4 py-2 bg-black/75 backdrop-blur-md border-b border-white/10">
+      <header className="relative z-40 flex items-center justify-between px-4 py-2 bg-black/80 backdrop-blur-md border-b border-white/10 shrink-0">
         <div className="flex items-center gap-2">
           <span className="text-xl">🌾</span>
           <div>
@@ -193,24 +203,46 @@ export default function Home() {
         </div>
       </header>
 
-      {/* ── Main Content ── */}
-      <main className="flex-1 relative overflow-hidden">
+      {/* ── Main Viewport ── */}
+      <main className="flex-1 relative overflow-hidden flex flex-col">
         {mode === "ar" ? (
-          /* ════════ MODE A: AR FIELD LENS ════════ */
-          <div className="relative h-full">
-            {/* Camera / Simulation */}
+          /* ════════ MODE A: LOCKED MOBILE APK VIEWPORT SHELL ════════ */
+          <div className="h-[100dvh] w-full max-w-[430px] mx-auto overflow-hidden select-none overscroll-none relative pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] flex-1 flex flex-col bg-black shadow-2xl">
+            {/* Camera / Dirt Simulation */}
             <ARCamera
               simulateMode={simulateCamera}
               onFrame={handleFrameCapture}
             />
 
-            {/* NASA Wireframe Grid Overlay */}
+            {/* NASA 3D Wireframe Grid Overlay */}
             <NASAGridOverlay preset={fieldData?.preset ?? null} />
 
-            {/* ── HUD Overlay ── */}
+            {/* Isolated Ground Canvas responding to audio frequency & metrics */}
+            <ArGroundCanvas
+              activeStrategyIndex={0}
+              frequencyData={frequencyData}
+              isSpeaking={isSpeaking}
+              nasaMetrics={{
+                smapMoisture: fieldData?.preset.smap_rootzone_mm?.slice(-1)[0],
+                ecostressEsi: fieldData?.preset.ecostress_esi?.slice(-1)[0],
+                landsatNdvi: fieldData?.preset.landsat_ndvi
+                  ? Math.max(...fieldData.preset.landsat_ndvi)
+                  : undefined,
+                landsatBsi: fieldData?.preset.landsat_bsi
+                  ? Math.max(...fieldData.preset.landsat_bsi)
+                  : undefined,
+                srtmSlope: fieldData?.preset.srtm_slope_deg,
+                temp: fieldData?.latestPower.T2M,
+                precip: fieldData?.latestPower.PRECTOTCORR,
+                solar: fieldData?.latestPower.ALLSKY_SFC_SW_DWN,
+              }}
+              groundTruth={soilVoice?.groundTruthCalibration ?? null}
+            />
+
+            {/* ── AR UI Controls & HUD ── */}
             <div className="absolute inset-0 z-20 flex flex-col justify-between pointer-events-none">
               {/* Top HUD */}
-              <div className="pointer-events-auto p-3 space-y-2 max-w-xl">
+              <div className="pointer-events-auto p-3 space-y-2">
                 {/* Preset Selector */}
                 <div className="flex gap-2 flex-wrap items-center">
                   {PRESETS.map((p) => (
@@ -263,13 +295,13 @@ export default function Home() {
                   </div>
                 )}
 
-                {/* Ground Truth Calibration Badge (if soil analyzed) */}
+                {/* Ground Truth Calibration Badge */}
                 {soilVoice?.groundTruthCalibration && (
-                  <div className="flex items-center gap-2 bg-emerald-950/80 border border-emerald-500/40 backdrop-blur-md rounded-xl px-3 py-1.5 text-xs text-emerald-200">
-                    <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                  <div className="flex items-center gap-2 bg-emerald-950/85 border border-emerald-500/40 backdrop-blur-md rounded-xl px-3 py-1.5 text-xs text-emerald-200">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
                     <span>
                       <strong className="text-white">Ground Calibration:</strong>{" "}
-                      Uncertainty reduced from ±
+                      ±
                       {soilVoice.groundTruthCalibration.uncertaintyReduction.satelliteOnlyPct}%{" "}
                       ➔ ±
                       {soilVoice.groundTruthCalibration.uncertaintyReduction.fusedPct}%{" "}
@@ -311,7 +343,7 @@ export default function Home() {
               </div>
 
               {/* Bottom HUD */}
-              <div className="pointer-events-auto space-y-2 pb-16 max-w-xl mx-auto w-full">
+              <div className="pointer-events-auto space-y-2 pb-16 w-full">
                 {/* Farmer Priority Sliders */}
                 <PrioritySliders
                   priorities={priorities}
@@ -347,7 +379,18 @@ export default function Home() {
                     subtitles={soilVoice.englishSubtitles}
                     language={language}
                     isPlaying={isSpeaking}
-                    onToggle={() => setIsSpeaking(!isSpeaking)}
+                    frequencyData={frequencyData}
+                    onToggle={() => {
+                      if (isSpeaking) {
+                        stopSoil();
+                      } else {
+                        speakSoil({
+                          text: soilVoice.firstPersonScript,
+                          language,
+                          audioBase64: soilVoice.audioBase64,
+                        });
+                      }
+                    }}
                   />
                 )}
               </div>
@@ -360,10 +403,12 @@ export default function Home() {
           </div>
         ) : (
           /* ════════ MODE B: JUDGE INSPECTOR ════════ */
-          <InspectorView
-            preset={fieldData?.preset ?? null}
-            strategies={soilVoice?.strategies ?? []}
-          />
+          <div className="flex-1 overflow-y-auto">
+            <InspectorView
+              preset={fieldData?.preset ?? null}
+              strategies={soilVoice?.strategies ?? []}
+            />
+          </div>
         )}
       </main>
     </div>

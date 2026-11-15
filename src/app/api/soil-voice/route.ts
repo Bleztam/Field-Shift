@@ -1,6 +1,7 @@
 // ─── /api/soil-voice — Gemini multimodal ground-truth + soil monologue ───
 import { NextRequest, NextResponse } from "next/server";
 import { SoilVoiceResponse, Language, RotationStrategy } from "@/lib/types";
+import { synthesizeSpeechWithGemini } from "@/lib/audioBuffer";
 
 const GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 
@@ -159,6 +160,20 @@ export async function POST(req: NextRequest) {
     if (!parsedResult) {
       console.warn("Using fallback agronomic response");
       parsedResult = getFallbackResponse(language as Language, preset);
+    }
+
+    // Synthesize audio with Gemini Flash TTS (gemini-3.8-flash-tts) returning base64 audio/wav
+    try {
+      if (parsedResult.firstPersonScript) {
+        const audioWav = await synthesizeSpeechWithGemini(
+          parsedResult.firstPersonScript
+        );
+        if (audioWav) {
+          parsedResult.audioBase64 = audioWav;
+        }
+      }
+    } catch (ttsErr) {
+      console.warn("Gemini TTS synthesis step skipped:", ttsErr);
     }
 
     return NextResponse.json(parsedResult);

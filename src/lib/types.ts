@@ -55,6 +55,7 @@ export interface SoilVoiceResponse {
   firstPersonScript: string;
   englishSubtitles: string;
   strategies: [RotationStrategy, RotationStrategy, RotationStrategy];
+  audioBase64?: string;
 }
 
 export type Language = "Amharic" | "Afaan Oromo" | "English" | "Spanish";

@@ -1,0 +1,17 @@
+{
+  "name": "Field Shift AR: The Living Field Lens",
+  "short_name": "FieldShiftAR",
+  "description": "AR-powered soil diagnostics fusing NASA satellite data with ground camera imagery and AI voice.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    }
+  ]
+}
