@@ -2,13 +2,15 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { Mic, MicOff, Send, MessageSquare, Sparkles, Loader2, X } from "lucide-react";
-import { SoilMood } from "@/lib/types";
+import { Language, SoilMood } from "@/lib/types";
+import { mapLanguageToCode } from "@/lib/languageCodes";
 
 interface FarmerQuestionBarProps {
   onAskQuestion: (question: string) => void;
   isLoading: boolean;
   currentMood?: SoilMood;
   lastQuestion?: string;
+  language?: Language;
 }
 
 const QUICK_QUESTIONS = [
@@ -23,13 +25,16 @@ export default function FarmerQuestionBar({
   isLoading,
   currentMood = "stressed",
   lastQuestion,
+  language = "English",
 }: FarmerQuestionBarProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [inputText, setInputText] = useState("");
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef<any>(null);
 
-  // Initialize Speech Recognition if supported
+  // Initialize Speech Recognition if supported. The mic button gracefully
+  // falls back to the plain text input + quick-question chips when the
+  // browser lacks SpeechRecognition (or the am-ET locale) — never crash.
   useEffect(() => {
     if (typeof window !== "undefined") {
       const SpeechRecognitionClass =
@@ -37,39 +42,47 @@ export default function FarmerQuestionBar({
         (window as any).webkitSpeechRecognition;
 
       if (SpeechRecognitionClass) {
-        const recognition = new SpeechRecognitionClass();
-        recognition.continuous = false;
-        recognition.interimResults = false;
-        recognition.lang = "en-US";
+        try {
+          const recognition = new SpeechRecognitionClass();
+          recognition.continuous = false;
+          recognition.interimResults = false;
+          recognition.lang = mapLanguageToCode(language); // e.g. am-ET for Amharic
 
-        recognition.onresult = (event: any) => {
-          const transcript = event.results[0]?.[0]?.transcript;
-          if (transcript) {
-            setInputText(transcript);
-            onAskQuestion(transcript);
-            setIsOpen(false);
-          }
-          setIsListening(false);
-        };
+          recognition.onresult = (event: any) => {
+            const transcript = event.results[0]?.[0]?.transcript;
+            if (transcript) {
+              setInputText(transcript);
+              onAskQuestion(transcript);
+              setIsOpen(false);
+            }
+            setIsListening(false);
+          };
 
-        recognition.onerror = () => {
-          setIsListening(false);
-        };
+          recognition.onerror = () => {
+            setIsListening(false);
+          };
 
-        recognition.onend = () => {
-          setIsListening(false);
-        };
+          recognition.onend = () => {
+            setIsListening(false);
+          };
 
-        recognitionRef.current = recognition;
+          recognitionRef.current = recognition;
+        } catch {
+          recognitionRef.current = null;
+        }
       }
     }
 
     return () => {
       if (recognitionRef.current) {
-        recognitionRef.current.abort();
+        try {
+          recognitionRef.current.abort();
+        } catch {
+          // ignore abort races on teardown
+        }
       }
     };
-  }, [onAskQuestion]);
+  }, [onAskQuestion, language]);
 
   const toggleMic = () => {
     if (!recognitionRef.current) {

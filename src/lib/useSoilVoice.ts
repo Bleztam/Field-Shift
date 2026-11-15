@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { mapLanguageToCode } from "./languageCodes";
 
 export interface SoilSpeakOptions {
   text: string;
   language?: string;
-  audioBase64?: string;
+  audioBase64?: string | null;
 }
 
 export interface UseSoilVoiceReturn {
@@ -21,17 +22,39 @@ export interface UseSoilVoiceReturn {
 
 const ZERO_BARS: number[] = new Array(16).fill(0);
 
-function mapLanguageToCode(lang?: string): string {
-  switch (lang) {
-    case "Amharic":
-      return "am-ET";
-    case "Afaan Oromo":
-      return "om-ET";
-    case "Spanish":
-      return "es-ES";
-    case "English":
-    default:
-      return "en-US";
+const LAST_SOIL_AUDIO_KEY = "fieldshift:lastSoilAudio";
+const MAX_CACHED_AUDIO_CHARS = 1_500_000; // stay well under localStorage quota
+
+export interface CachedSoilAudio {
+  audioBase64: string;
+  text: string;
+  language?: string;
+  savedAt: number;
+}
+
+// Caches the most recent soil voice audio so the farmer can replay the last
+// answer offline without re-billing TTS credits.
+export function cacheLastSoilAudio(entry: Omit<CachedSoilAudio, "savedAt">): void {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return;
+    if (!entry.audioBase64 || entry.audioBase64.length > MAX_CACHED_AUDIO_CHARS) return;
+    const payload: CachedSoilAudio = { ...entry, savedAt: Date.now() };
+    window.localStorage.setItem(LAST_SOIL_AUDIO_KEY, JSON.stringify(payload));
+  } catch {
+    // Quota or privacy-mode failures are non-fatal.
+  }
+}
+
+export function loadLastSoilAudio(): CachedSoilAudio | null {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return null;
+    const raw = window.localStorage.getItem(LAST_SOIL_AUDIO_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedSoilAudio;
+    if (!parsed?.audioBase64 || !parsed?.text) return null;
+    return parsed;
+  } catch {
+    return null;
   }
 }
 
@@ -138,6 +161,10 @@ export function useSoilVoice(): UseSoilVoiceReturn {
 
       const { text, language = "English", audioBase64 } = options;
       if (!text && !audioBase64) return;
+
+      if (audioBase64) {
+        cacheLastSoilAudio({ audioBase64, text, language });
+      }
 
       setIsSpeaking(true);
       isSpeakingRef.current = true;
@@ -269,13 +296,22 @@ export function useSoilVoice(): UseSoilVoiceReturn {
           }
         }
 
-        // Tier 3: Browser window.speechSynthesis
+        // Tier 3: Browser window.speechSynthesis (e.g. am-ET voice when the
+        // platform ships one; otherwise the browser default, typically en).
         if (window.speechSynthesis) {
           window.speechSynthesis.cancel();
           const utterance = new SpeechSynthesisUtterance(text);
           utterance.lang = langCode;
           utterance.rate = 0.88;
           utterance.pitch = 0.72;
+
+          const langPrefix = langCode.split("-")[0]?.toLowerCase();
+          const matchingVoice = window.speechSynthesis
+            .getVoices()
+            .find((v) => v.lang?.toLowerCase().startsWith(langPrefix));
+          if (matchingVoice) {
+            utterance.voice = matchingVoice;
+          }
 
           utterance.onend = () => {
             stopSoil();

@@ -411,6 +411,7 @@ export default function Home() {
                 isLoading={isLoadingVoice}
                 currentMood={soilMood}
                 lastQuestion={lastFarmerQuestion}
+                language={language}
               />
 
               {/* Action Button: Let the Soil Speak */}

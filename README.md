@@ -102,14 +102,21 @@ Replacing sterile charts with an emotive, game-style AR avatar emerging organica
 ---
 
 ### 3. 🎙️ 3-Tier AI Voice Engine & Two-Way Farmer Dialogue
-- **Gemini TTS Voice Synthesis**: Synthesizes dramatic, scientifically grounded first-person monologues using Google DeepMind's `gemini-3.8-flash-tts` model ("Fenrir" deep earthy voice timbre) encoded with a 24 kHz 16-bit mono RIFF/WAV header.
+- **Amharic TTS via Addis AI (`src/lib/addisTts.ts`)**: Amharic monologues are voiced by the [Addis AI](https://docs.addisassistant.com) Amharic voice API — voices **`am-hamen`** (default) and **`am-simon`**, `mp3_44100` output. Non-Amharic languages keep using Gemini TTS. Provider chain for Amharic: **Addis AI → Gemini TTS → browser `speechSynthesis` (`am-ET`, then platform default/en)**. The active provider is returned on every response as `audioProvider` (`"addis" | "gemini" | "browser" | "none"`).
+- **Gemini for NLU & explanation, code for verdicts**: Gemini only *extracts* `{ crop, intent }` from the farmer's question (schema-validated JSON, with an offline Amharic/English keyword fallback: ጤፍ teff, በቆሎ maize, ሽምብራ chickpea, ስንዴ wheat, ማሽላ sorghum, ቦለቄ/ፈሰስ haricot bean) and *writes* the first-person monologue. The agronomic **verdict (`plant` / `plant_with_caution` / `wait`), `reasons`, and `confidence` are computed deterministically in code (`src/lib/cropIntent.ts`) from NASA metrics — the LLM never decides the verdict.**
+- **Gemini TTS Voice Synthesis**: Fallback voice path using Google DeepMind's `gemini-3.8-flash-tts` model ("Fenrir" deep earthy voice timbre) encoded with a 24 kHz 16-bit mono RIFF/WAV header.
 - **3-Tier Resilient Audio Hook (`useSoilVoice.ts`)**:
   1. *Tier 1 (Primary)*: HTML5 Audio fed directly through Web Audio API `AudioContext` and `AnalyserNode` for 60 fps audio reactivity.
   2. *Tier 2 (Native Android APK Fallback)*: Integrates with `Capacitor.Plugins.TextToSpeech` for offline hardware-level voice generation.
   3. *Tier 3 (Browser SpeechSynthesis)*: Native Web Speech API fallback.
-- **Two-Way Conversational Soil**: Farmers can ask questions via Speech-to-Text (`SpeechRecognition`) or interactive quick-question chips (e.g., *"Why are you cracking?"*, *"What can I plant that still makes cash?"*). The soil responds in first-person citing its live NASA telemetry.
+- **Two-Way Conversational Soil**: Farmers can ask questions via Speech-to-Text (`SpeechRecognition`, locale `am-ET` when Amharic is selected, with feature detection and automatic fallback to typed input + quick-question chips) or interactive quick-question chips (e.g., *"Why are you cracking?"*, *"What can I plant that still makes cash?"*). The soil responds in first-person citing its live NASA telemetry.
 - **Multilingual Support**: Real-time generation and translation across **English, Amharic, Afaan Oromo, and Spanish**.
 - **Compact Glassmorphic Speech Bubble (`SoilSpeaker.tsx`)**: High-contrast, 2-line floating dialogue bubble with synchronized auto-scrolling subtitles that leaves 75%+ of the camera viewport completely unobstructed.
+
+#### 💳 Addis AI Cost & Privacy Notes
+- Addis AI bills **per minute of generated audio**, so the integration minimizes calls: text is capped at **400 chars / 3 sentences**, responses are **cached in-memory server-side** by content hash (repeat questions are free), retries are limited to **one idempotent replay** (same `client_request_id`), and the **last spoken answer is cached in `localStorage`** on the device for offline replay.
+- The `ADDIS_API_KEY` lives only in `.env.local` (gitignored via `.env*`), is sent solely as an `x-api-key` header from server-side API routes, and is never logged or returned to clients. Dev servers log `credits_remaining` after each generation for cost monitoring (server console only).
+- Admin health probe: `GET /api/tts/health` → `{ "configured": boolean, "reachable": boolean }` (nothing else).
 
 ---
 
@@ -177,9 +184,11 @@ NasaSpaceApps/
     │   │   ├── nasa-power/
     │   │   │   └── route.ts     # Live NASA POWER daily point fetch & fill-value filter
     │   │   ├── soil-voice/
-    │   │   │   └── route.ts     # Gemini multimodal vision + TTS audio generation
+    │   │   │   └── route.ts     # Gemini NLU + code verdict + Addis/Gemini audio generation
     │   │   └── tts/
-    │   │       └── route.ts     # Standalone audio synthesis endpoint
+    │   │       ├── route.ts     # Standalone audio synthesis (Addis-first for Amharic)
+    │   │       └── health/
+    │   │           └── route.ts # Admin probe: { configured, reachable } only
     │   ├── components/
     │   │   ├── ARCamera.tsx         # Rear camera stream & procedural dirt simulator
     │   │   ├── ArGroundCanvas.tsx   # 3D Living Ground Face & particle system
@@ -193,11 +202,14 @@ NasaSpaceApps/
     │   ├── layout.tsx           # Mobile viewport meta & dark theme wrapper
     │   └── page.tsx             # Dual-mode mobile shell orchestrator
     └── lib/
+        ├── addisTts.ts          # Addis AI Amharic TTS client (cache, idempotent retry, health)
         ├── audioBuffer.ts       # 24kHz WAV PCM packaging & Gemini TTS invoker
+        ├── cropIntent.ts        # Crop/intent keyword fallback + code-only cropVerdict
+        ├── languageCodes.ts     # Shared BCP-47 mapping (am-ET, om-ET, …) + Ge'ez detection
         ├── presets.ts           # Multi-resolution satellite arrays for Ethiopia & Nevada
         ├── strategyScoring.ts   # Dynamic Euclidean match score algorithm
         ├── types.ts             # TypeScript domain interfaces
-        └── useSoilVoice.ts      # 3-tier audio playback & AnalyserNode frequency hook
+        └── useSoilVoice.ts      # 3-tier audio playback, AnalyserNode hook, localStorage replay cache
 ```
 
 ---
@@ -217,10 +229,16 @@ npm install
 ```
 
 ### 2. Environment Configuration
-Create a `.env.local` file in the root directory:
+Create a `.env.local` file in the root directory (see `.env.example`):
 ```env
-# Google Gemini API Key for vision analysis & TTS voice generation
+# Google Gemini API Key for vision analysis, NLU & fallback TTS
 GEMINI_API_KEY="your_gemini_api_key_here"
+
+# Addis AI API Key for Amharic TTS (server-side only — never NEXT_PUBLIC_)
+ADDIS_API_KEY="your_addis_api_key_here"
+
+# Addis AI voice: "am-hamen" (default) or "am-simon"
+ADDIS_VOICE_ID="am-hamen"
 
 # (Optional) Backend base URL for native mobile APK builds
 NEXT_PUBLIC_API_BASE_URL="http://localhost:3000"
@@ -259,6 +277,12 @@ npx cap open android
 - **NASA POWER API Resiliency**: Tested against live LarC servers. Includes an 18-day query window with automatic filtering of `-999` fill values caused by 2-to-4-day satellite processing latency.
 - **Multimodal Ground Truth**: Evaluated against high-resolution soil images across varied residue densities ($10\%\text{--}80\%$) and crack formations (none to severe).
 - **TTS Audio Streaming**: Validated with 24 kHz 16-bit mono RIFF WAV headers, streaming directly into the Web Audio API without browser transcoding errors.
+
+### ⚠️ Honest Caveats (Amharic Voice Pipeline)
+- **Browser speech recognition is uneven**: `SpeechRecognition` with locale `am-ET` works best on Chrome (desktop/Android). Safari and Firefox may lack the API or the Amharic locale entirely — in that case the mic button automatically falls back to typed input plus quick-question chips, and the app never crashes.
+- **Native-speaker review pending**: Amharic crop keywords (ጤፍ, በቆሎ, ሽምብራ, ስንዴ, ማሽላ, ቦለቄ/ፈሰስ) and the fallback Amharic monologue template are machine-assisted translations marked **"TODO verify"** in code. They must be reviewed by a native Amharic-speaking agronomist before real field deployment.
+- **TTS credit cost**: Addis AI generation is billed per minute. Long monologues are truncated to 400 characters / 3 sentences before synthesis; treat the in-memory and `localStorage` caches as cost controls, not just performance optimizations. Empty `ADDIS_API_KEY` silently degrades Amharic audio to the Gemini/browser chain.
+- **Voice quality**: `am-hamen` and `am-simon` were selected as reasonable defaults; no systematic intelligibility evaluation with farmers has been performed yet.
 
 ---
 

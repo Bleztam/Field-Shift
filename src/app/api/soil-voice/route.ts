@@ -1,8 +1,30 @@
-// ─── /api/soil-voice — Gemini multimodal ground-truth + soil monologue ───
+// ─── /api/soil-voice — Gemini NLU/explanation + code verdict + Addis TTS ───
+// Pipeline: (1) Gemini extracts { crop, intent } from the farmer question
+// (schema-validated, keyword fallback) → (2) cropVerdict is computed in code,
+// never by the LLM → (3) Gemini writes the first-person monologue →
+// (4) Amharic audio via Addis AI, Gemini TTS fallback, browser last.
 import { NextRequest, NextResponse } from "next/server";
-import { SoilVoiceResponse, Language, RotationStrategy, SoilMood } from "@/lib/types";
+import {
+  SoilVoiceResponse,
+  Language,
+  RotationStrategy,
+  SoilMood,
+  NasaPowerDaily,
+  SatellitePreset,
+  AudioProvider,
+} from "@/lib/types";
 import { synthesizeSpeechWithGemini } from "@/lib/audioBuffer";
+import { synthesizeAmharic } from "@/lib/addisTts";
 import { DEFAULT_STRATEGY_WEIGHTS } from "@/lib/strategyScoring";
+import {
+  CANONICAL_CROPS,
+  CanonicalCrop,
+  FARMER_INTENTS,
+  FarmerIntent,
+  cropVerdict,
+  inferIntentFromText,
+  matchCropFromText,
+} from "@/lib/cropIntent";
 
 const GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 
@@ -15,6 +37,11 @@ function buildPrompt(
   const questionSection = farmerQuestion
     ? `\n## FARMER QUESTION TO YOU (THE SOIL)\nThe farmer is speaking directly to you and asks: "${farmerQuestion}"\nAnswer this specific question directly in your first-person monologue while citing your live NASA data!\n`
     : "";
+
+  const amharicScriptRule =
+    language === "Amharic"
+      ? " The monologue MUST be written in plain Ge'ez (Ethiopic) script only: no markdown, no emojis, and no Latin digits — spell every number out in Amharic words."
+      : "";
 
   return `You are an expert agronomist AI fusing satellite remote sensing with ground-level camera imagery. You speak directly AS THE LIVING SOIL.
 
@@ -42,7 +69,7 @@ ${questionSection}
     }
   },
   "mood": "stressed",
-  "firstPersonScript": "A dramatic, scientifically grounded 2-3 sentence monologue spoken BY the soil itself in ${language}. The soil refers to itself in first person (e.g. 'I am the soil'). Cite specific NASA data (SMAP moisture, ECOSTRESS heat, Landsat BSI, etc.). ${farmerQuestion ? 'Directly address the farmer question: ' + farmerQuestion : 'Be emotional and urgent.'}",
+  "firstPersonScript": "A dramatic, scientifically grounded 2-3 sentence monologue spoken BY the soil itself in ${language}. The soil refers to itself in first person (e.g. 'I am the soil'). Cite specific NASA data (SMAP moisture, ECOSTRESS heat, Landsat BSI, etc.). ${farmerQuestion ? 'Directly address the farmer question: ' + farmerQuestion : 'Be emotional and urgent.'}${amharicScriptRule}",
   "englishSubtitles": "Accurate English translation of the firstPersonScript if language is not English, otherwise identical.",
   "strategies": [
     {
@@ -75,6 +102,133 @@ ${questionSection}
 Note: For "mood", choose exactly one of: "stressed" (if parched/cracking/exposed), "hopeful" (if cover/bridge practices are active), or "thriving" (if moisture retention and bio-shielding are strong).`;
 }
 
+interface ExtractedCropIntent {
+  crop: CanonicalCrop | null;
+  intent: FarmerIntent;
+}
+
+// Cheap single-purpose NLU call. The model only labels the question; the
+// agronomic verdict itself is computed later in deterministic code.
+async function extractCropIntentWithGemini(
+  question: string,
+  apiKey: string
+): Promise<ExtractedCropIntent | null> {
+  const safeQuestion = question.replace(/"{3,}/g, '"').slice(0, 500);
+  const prompt = `You extract structured fields from a smallholder farmer's message (it may be in Amharic, Afaan Oromo, English, or Spanish).
+Return ONLY compact JSON (no markdown fences):
+{"crop": <"teff"|"maize"|"chickpea"|"wheat"|"sorghum"|"haricot_bean"|null>, "intent": <"plant_check"|"irrigation"|"cash_income"|"soil_health"|"general">}
+Rules:
+- crop = the crop the farmer asks about. Map local names: ጤፍ=teff, በቆሎ=maize, ሽምብራ=chickpea, ስንዴ=wheat, ማሽላ=sorghum, ቦለቄ/ፈሰስ=haricot_bean. null if no crop is mentioned.
+- intent = "irrigation" if they mention watering/irrigating/river/well/pump; "cash_income" if about profit/selling/money/market; "soil_health" if about cracking/moisture/erosion/fertility; "plant_check" if asking whether/when/what to plant; otherwise "general".
+Message: """${safeQuestion}"""`;
+
+  for (const model of GEMINI_MODELS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0,
+            maxOutputTokens: 128,
+            responseMimeType: "application/json",
+          },
+        }),
+      });
+      if (!res.ok) continue;
+
+      const data = await res.json();
+      const rawText =
+        data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+      if (!rawText) continue;
+
+      const parsed = JSON.parse(
+        rawText.replace(/```json\n?|```\n?/g, "").trim()
+      ) as { crop?: unknown; intent?: unknown };
+
+      // Schema validation — reject anything outside the declared enums.
+      const cropValid =
+        parsed.crop === null ||
+        (typeof parsed.crop === "string" &&
+          (CANONICAL_CROPS as readonly string[]).includes(parsed.crop));
+      const intentValid =
+        typeof parsed.intent === "string" &&
+        (FARMER_INTENTS as readonly string[]).includes(parsed.intent);
+      if (!cropValid || !intentValid) continue;
+
+      return {
+        crop: (parsed.crop ?? null) as CanonicalCrop | null,
+        intent: parsed.intent as FarmerIntent,
+      };
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+interface FinalizeContext {
+  language: Language;
+  preset: Partial<SatellitePreset>;
+  latestPower: Partial<NasaPowerDaily>;
+  farmerQuestion?: string;
+  cropIntent: ExtractedCropIntent | null;
+}
+
+// Attaches the code-computed verdict and runs the TTS provider chain.
+// Used for both the Gemini path and the offline fallback path so a Gemini
+// outage still yields a voiced template response.
+async function attachVerdictAndAudio(
+  resp: SoilVoiceResponse,
+  ctx: FinalizeContext
+): Promise<SoilVoiceResponse> {
+  const { language, preset, latestPower, farmerQuestion, cropIntent } = ctx;
+
+  if (farmerQuestion) {
+    const crop = cropIntent?.crop ?? matchCropFromText(farmerQuestion);
+    const intent = cropIntent?.intent ?? inferIntentFromText(farmerQuestion);
+    resp.crop = crop;
+    resp.intent = intent;
+    if (crop) {
+      const v = cropVerdict({ crop, intent, preset, latestPower });
+      resp.verdict = v.verdict;
+      resp.reasons = v.reasons;
+      resp.confidence = v.confidence;
+    }
+  }
+
+  const script = resp.firstPersonScript ?? "";
+  let audioBase64: string | null = null;
+  let audioProvider: AudioProvider = "none";
+
+  if (script.trim()) {
+    if (language === "Amharic") {
+      const addis = await synthesizeAmharic(script);
+      if (addis) {
+        audioBase64 = `data:audio/mpeg;base64,${addis.audioBase64}`;
+        audioProvider = "addis";
+      }
+    }
+    if (!audioBase64) {
+      const geminiAudio = await synthesizeSpeechWithGemini(script);
+      if (geminiAudio) {
+        audioBase64 = geminiAudio;
+        audioProvider = "gemini";
+      }
+    }
+    if (!audioBase64) {
+      // Client speaks via speechSynthesis (am-ET, then en).
+      audioProvider = "browser";
+    }
+  }
+
+  resp.audioBase64 = audioBase64;
+  resp.audioProvider = audioProvider;
+  return resp;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -87,17 +241,36 @@ export async function POST(req: NextRequest) {
     } = body;
 
     const apiKey = process.env.GEMINI_API_KEY;
+
+    const nd = nasaData ?? {};
+    const preset = nd.preset ?? {};
+    const lp = nd.latestPower ?? {};
+
+    // Crop/intent extraction runs in parallel with the main analysis.
+    const cropIntentPromise: Promise<ExtractedCropIntent | null> =
+      farmerQuestion && apiKey
+        ? extractCropIntentWithGemini(farmerQuestion, apiKey)
+        : Promise.resolve(null);
+
     if (!apiKey) {
       console.warn("GEMINI_API_KEY not configured, using fallback response");
+      const fallback = getFallbackResponse(
+        language as Language,
+        preset,
+        farmerQuestion
+      );
       return NextResponse.json(
-        getFallbackResponse(language as Language, nasaData?.preset ?? {}, farmerQuestion)
+        await attachVerdictAndAudio(fallback, {
+          language: language as Language,
+          preset,
+          latestPower: lp,
+          farmerQuestion,
+          cropIntent: await cropIntentPromise,
+        })
       );
     }
 
     // Build NASA data summary string
-    const nd = nasaData ?? {};
-    const preset = nd.preset ?? {};
-    const lp = nd.latestPower ?? {};
     const nasaSummary = `
 - Location: ${preset.name ?? "Flagship Field"}
 - Coordinates: ${preset.lat ?? 0}, ${preset.lon ?? 0}
@@ -133,47 +306,53 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    let parsedResult: SoilVoiceResponse | null = null;
+    const mainAnalysisPromise = (async (): Promise<SoilVoiceResponse | null> => {
+      for (const model of GEMINI_MODELS) {
+        try {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+          const geminiRes = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts }],
+              generationConfig: {
+                temperature: 0.7,
+                maxOutputTokens: 2048,
+                responseMimeType: "application/json",
+              },
+            }),
+          });
 
-    // Try available Gemini models
-    for (const model of GEMINI_MODELS) {
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-        const geminiRes = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: {
-              temperature: 0.7,
-              maxOutputTokens: 2048,
-              responseMimeType: "application/json",
-            },
-          }),
-        });
-
-        if (!geminiRes.ok) {
-          const errText = await geminiRes.text();
-          console.warn(`Model ${model} returned error: ${errText.slice(0, 150)}`);
-          continue;
-        }
-
-        const geminiData = await geminiRes.json();
-        const rawText =
-          geminiData.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-
-        if (rawText) {
-          const cleaned = rawText.replace(/```json\n?|```\n?/g, "").trim();
-          parsedResult = JSON.parse(cleaned) as SoilVoiceResponse;
-          if (parsedResult.strategies && parsedResult.strategies.length === 3) {
-            break; // Success!
+          if (!geminiRes.ok) {
+            const errText = await geminiRes.text();
+            console.warn(`Model ${model} returned error: ${errText.slice(0, 150)}`);
+            continue;
           }
-        }
-      } catch (err) {
-        console.warn(`Attempt with ${model} failed:`, err);
-      }
-    }
 
+          const geminiData = await geminiRes.json();
+          const rawText =
+            geminiData.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+
+          if (rawText) {
+            const cleaned = rawText.replace(/```json\n?|```\n?/g, "").trim();
+            const candidate = JSON.parse(cleaned) as SoilVoiceResponse;
+            if (candidate.strategies && candidate.strategies.length === 3) {
+              return candidate;
+            }
+          }
+        } catch (err) {
+          console.warn(`Attempt with ${model} failed:`, err);
+        }
+      }
+      return null;
+    })();
+
+    const [mainParsed, cropIntent] = await Promise.all([
+      mainAnalysisPromise,
+      cropIntentPromise,
+    ]);
+
+    let parsedResult = mainParsed;
     if (!parsedResult) {
       console.warn("Using fallback agronomic response");
       parsedResult = getFallbackResponse(
@@ -196,25 +375,22 @@ export async function POST(req: NextRequest) {
       parsedResult.mood = "stressed";
     }
 
-    // Synthesize audio with Gemini Flash TTS (gemini-3.8-flash-tts) returning base64 audio/wav
-    try {
-      if (parsedResult.firstPersonScript) {
-        const audioWav = await synthesizeSpeechWithGemini(
-          parsedResult.firstPersonScript
-        );
-        if (audioWav) {
-          parsedResult.audioBase64 = audioWav;
-        }
-      }
-    } catch (ttsErr) {
-      console.warn("Gemini TTS synthesis step skipped:", ttsErr);
-    }
-
-    return NextResponse.json(parsedResult);
+    return NextResponse.json(
+      await attachVerdictAndAudio(parsedResult, {
+        language: language as Language,
+        preset,
+        latestPower: lp,
+        farmerQuestion,
+        cropIntent,
+      })
+    );
   } catch (err: unknown) {
     console.error("Soil Voice handler error:", err);
+    const fallback = getFallbackResponse("English", {});
+    fallback.audioBase64 = null;
+    fallback.audioProvider = "none";
     return NextResponse.json(
-      getFallbackResponse("English", {}),
+      fallback,
       { status: 200 } // return 200 with fallback so UI never breaks
     );
   }
