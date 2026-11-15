@@ -1,16 +1,22 @@
 // ─── /api/soil-voice — Gemini multimodal ground-truth + soil monologue ───
 import { NextRequest, NextResponse } from "next/server";
-import { SoilVoiceResponse, Language, RotationStrategy } from "@/lib/types";
+import { SoilVoiceResponse, Language, RotationStrategy, SoilMood } from "@/lib/types";
 import { synthesizeSpeechWithGemini } from "@/lib/audioBuffer";
+import { DEFAULT_STRATEGY_WEIGHTS } from "@/lib/strategyScoring";
 
 const GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
 
 function buildPrompt(
   nasaDataSummary: string,
   language: Language,
-  farmerPriorities: string
+  farmerPriorities: string,
+  farmerQuestion?: string
 ): string {
-  return `You are an expert agronomist AI fusing satellite remote sensing with ground-level camera imagery.
+  const questionSection = farmerQuestion
+    ? `\n## FARMER QUESTION TO YOU (THE SOIL)\nThe farmer is speaking directly to you and asks: "${farmerQuestion}"\nAnswer this specific question directly in your first-person monologue while citing your live NASA data!\n`
+    : "";
+
+  return `You are an expert agronomist AI fusing satellite remote sensing with ground-level camera imagery. You speak directly AS THE LIVING SOIL.
 
 ## GROUND CAMERA IMAGE
 The attached image is a 1-cm resolution photograph of the soil surface taken by a farmer's phone camera.
@@ -24,7 +30,7 @@ ${nasaDataSummary}
 
 ## FARMER PRIORITIES
 ${farmerPriorities}
-
+${questionSection}
 ## REQUIRED OUTPUT — respond in strict JSON (no markdown fences, pure JSON matching this exact structure):
 {
   "groundTruthCalibration": {
@@ -35,7 +41,8 @@ ${farmerPriorities}
       "fusedPct": 11
     }
   },
-  "firstPersonScript": "A dramatic, scientifically grounded 3-sentence monologue spoken BY the soil itself in ${language}. The soil refers to itself in first person (e.g. 'I am the soil'). Cite specific NASA data (SMAP moisture, ECOSTRESS heat, Landsat BSI, etc.). Be emotional and urgent.",
+  "mood": "stressed",
+  "firstPersonScript": "A dramatic, scientifically grounded 2-3 sentence monologue spoken BY the soil itself in ${language}. The soil refers to itself in first person (e.g. 'I am the soil'). Cite specific NASA data (SMAP moisture, ECOSTRESS heat, Landsat BSI, etc.). ${farmerQuestion ? 'Directly address the farmer question: ' + farmerQuestion : 'Be emotional and urgent.'}",
   "englishSubtitles": "Accurate English translation of the firstPersonScript if language is not English, otherwise identical.",
   "strategies": [
     {
@@ -63,7 +70,9 @@ ${farmerPriorities}
       "local_expert_risks": "Economic transition hurdles and local crop rotation risks"
     }
   ]
-}`;
+}
+
+Note: For "mood", choose exactly one of: "stressed" (if parched/cracking/exposed), "hopeful" (if cover/bridge practices are active), or "thriving" (if moisture retention and bio-shielding are strong).`;
 }
 
 export async function POST(req: NextRequest) {
@@ -74,12 +83,15 @@ export async function POST(req: NextRequest) {
       nasaData,
       language = "English",
       farmerPriorities,
+      farmerQuestion,
     } = body;
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       console.warn("GEMINI_API_KEY not configured, using fallback response");
-      return NextResponse.json(getFallbackResponse(language as Language, nasaData?.preset ?? {}));
+      return NextResponse.json(
+        getFallbackResponse(language as Language, nasaData?.preset ?? {}, farmerQuestion)
+      );
     }
 
     // Build NASA data summary string
@@ -102,7 +114,12 @@ export async function POST(req: NextRequest) {
       ? `Water Conservation: ${farmerPriorities.waterConservation}/100, Soil Nitrogen: ${farmerPriorities.soilNitrogen}/100, Cash Income: ${farmerPriorities.cashIncome}/100, Livestock Forage: ${farmerPriorities.livestockForage}/100`
       : "Balanced priorities (Water: 70, Nitrogen: 50, Income: 60, Forage: 40)";
 
-    const prompt = buildPrompt(nasaSummary, language as Language, priorityStr);
+    const prompt = buildPrompt(
+      nasaSummary,
+      language as Language,
+      priorityStr,
+      farmerQuestion
+    );
 
     // Build Gemini request payload
     const parts: Array<Record<string, unknown>> = [{ text: prompt }];
@@ -159,7 +176,24 @@ export async function POST(req: NextRequest) {
 
     if (!parsedResult) {
       console.warn("Using fallback agronomic response");
-      parsedResult = getFallbackResponse(language as Language, preset);
+      parsedResult = getFallbackResponse(
+        language as Language,
+        preset,
+        farmerQuestion
+      );
+    }
+
+    // Attach strategy default weights
+    if (parsedResult.strategies) {
+      parsedResult.strategies = parsedResult.strategies.map((s) => ({
+        ...s,
+        weights: s.weights || DEFAULT_STRATEGY_WEIGHTS[s.name],
+      })) as [RotationStrategy, RotationStrategy, RotationStrategy];
+    }
+
+    // Default mood if not set
+    if (!parsedResult.mood) {
+      parsedResult.mood = "stressed";
     }
 
     // Synthesize audio with Gemini Flash TTS (gemini-3.8-flash-tts) returning base64 audio/wav
@@ -188,15 +222,30 @@ export async function POST(req: NextRequest) {
 
 function getFallbackResponse(
   language: Language,
-  preset: Record<string, unknown>
+  preset: Record<string, unknown>,
+  farmerQuestion?: string
 ): SoilVoiceResponse {
   const cropName = (preset.crop as string) || "Teff / Maize";
+
+  let firstPerson =
+    "I am the living soil beneath your feet, parched and holding only 42 millimeters of root-zone water according to NASA SMAP. Landsat watches my bare skin scorch under high bare-soil index readings as ECOSTRESS warns of severe evaporative stress. Cover me with living roots before the rains strip away my topsoil forever.";
+
+  if (farmerQuestion) {
+    if (farmerQuestion.toLowerCase().includes("crack")) {
+      firstPerson =
+        "I am cracking because NASA SMAP shows my moisture has dropped to 42 mm, while ECOSTRESS measures an evaporative stress index of 0.28. Without root cover, solar radiation bakes my clay minerals until my surface splits open. Plant a bridge crop now so my fissures can heal.";
+    } else if (farmerQuestion.toLowerCase().includes("cash")) {
+      firstPerson =
+        "You can protect me and still earn cash: an early legume bridge crop like cowpea or chickpea yields high-protein harvest while saving you 30% on synthetic nitrogen fertilizer. NASA Landsat data confirms it will shield my surface before the main planting season.";
+    } else {
+      firstPerson = `Listening to your question: NASA satellite data confirms my root-zone is under strain with an evaporative index of 0.28. Adopting a bridge crop will stabilize my moisture without interrupting your seasonal ${cropName} rotation.`;
+    }
+  }
+
   const scripts: Record<Language, { script: string; subtitles: string }> = {
     English: {
-      script:
-        "I am the living soil beneath your feet, parched and holding only 42 millimeters of root-zone water according to NASA SMAP. Landsat watches my bare skin scorch under high bare-soil index readings as ECOSTRESS warns of severe evaporative stress. Cover me with living roots before the rains strip away my topsoil forever.",
-      subtitles:
-        "I am the living soil beneath your feet, parched and holding only 42 millimeters of root-zone water according to NASA SMAP. Landsat watches my bare skin scorch under high bare-soil index readings as ECOSTRESS warns of severe evaporative stress. Cover me with living roots before the rains strip away my topsoil forever.",
+      script: firstPerson,
+      subtitles: firstPerson,
     },
     Amharic: {
       script:
@@ -232,6 +281,7 @@ function getFallbackResponse(
         "SMAP 9 km grid cell blends upland hills with valley bottom; Landsat 30 m cannot observe sub-surface hardpan or compaction depths.",
       local_expert_risks:
         "Soil structure breakdown from repeat moldboard tillage; soil organic carbon depletion accelerating without ground-level compost integration.",
+      weights: DEFAULT_STRATEGY_WEIGHTS["Current Baseline"],
     },
     {
       name: "Bare-Window Bridge Crop",
@@ -245,6 +295,7 @@ function getFallbackResponse(
         "Orbital 16-day revisit cannot detect rapid germination under sporadic showers; multispectral sensors cannot gauge bridge crop seedbed depth.",
       local_expert_risks:
         "Risk of bridge crop withdrawing residual moisture if dry spell extends; requires seed availability of drought-hardy vetch or cowpea varieties.",
+      weights: DEFAULT_STRATEGY_WEIGHTS["Bare-Window Bridge Crop"],
     },
     {
       name: "Hydro-Shield Multi-Year Rotation",
@@ -258,8 +309,15 @@ function getFallbackResponse(
         "Satellites cannot quantify mycorrhizal fungal network development or measure micro-pore aggregate stability at sub-meter scales.",
       local_expert_risks:
         "Requires local multi-year farm credit or grain storage infrastructure; marketing channels for alternate rotation crops need local cooperative support.",
+      weights: DEFAULT_STRATEGY_WEIGHTS["Hydro-Shield Multi-Year Rotation"],
     },
   ];
+
+  const mood: SoilMood = farmerQuestion?.toLowerCase().includes("cash")
+    ? "hopeful"
+    : farmerQuestion?.toLowerCase().includes("thriv")
+    ? "thriving"
+    : "stressed";
 
   return {
     groundTruthCalibration: {
@@ -267,8 +325,10 @@ function getFallbackResponse(
       surfaceCrackSeverity: "mild",
       uncertaintyReduction: { satelliteOnlyPct: 34, fusedPct: 11 },
     },
+    mood,
     firstPersonScript: selectedScript.script,
     englishSubtitles: selectedScript.subtitles,
     strategies: fallbackStrategies,
+    farmerQuestion,
   };
 }

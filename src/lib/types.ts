@@ -41,6 +41,15 @@ export interface GroundTruthCalibration {
   };
 }
 
+export type SoilMood = "stressed" | "hopeful" | "thriving";
+
+export interface StrategyWeights {
+  waterConservation: number; // 0-1
+  soilNitrogen: number;      // 0-1
+  cashIncome: number;        // 0-1
+  livestockForage: number;   // 0-1
+}
+
 export interface RotationStrategy {
   name: string;
   why_suggested: string;
@@ -48,6 +57,8 @@ export interface RotationStrategy {
   expected_benefits: string;
   satellite_info_gaps: string;
   local_expert_risks: string;
+  weights?: StrategyWeights;
+  matchScore?: number;       // 0-100% computed from farmer priorities
 }
 
 export interface SoilVoiceResponse {
@@ -56,6 +67,8 @@ export interface SoilVoiceResponse {
   englishSubtitles: string;
   strategies: [RotationStrategy, RotationStrategy, RotationStrategy];
   audioBase64?: string;
+  mood?: SoilMood;
+  farmerQuestion?: string;
 }
 
 export type Language = "Amharic" | "Afaan Oromo" | "English" | "Spanish";
