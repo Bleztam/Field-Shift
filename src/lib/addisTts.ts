@@ -266,6 +266,51 @@ export async function checkAddisHealth(): Promise<{
   return { configured, reachable };
 }
 
+const SCRIBE_PATH = "/api/v1/scribe/transcribe";
+
+/**
+ * Transcribes audio using Addis Scribe (Addis AI) for African & Ethiopian languages.
+ */
+export async function transcribeAddisScribe(
+  audioBuffer: Buffer,
+  language: string = "am",
+  mimeType: string = "audio/webm"
+): Promise<{ text: string; seconds?: number } | null> {
+  const apiKey = process.env.ADDIS_API_KEY;
+  if (!apiKey || !audioBuffer || audioBuffer.length === 0) return null;
+
+  const requestId = deterministicRequestId(
+    sha256Hex(audioBuffer.toString("base64") + language)
+  );
+  let filename = "audio.webm";
+  if (mimeType.includes("mp3") || mimeType.includes("mpeg")) filename = "audio.mp3";
+  else if (mimeType.includes("wav")) filename = "audio.wav";
+  else if (mimeType.includes("ogg")) filename = "audio.ogg";
+  else if (mimeType.includes("m4a") || mimeType.includes("mp4")) filename = "audio.m4a";
+
+  const formData = new FormData();
+  const blob = new Blob([new Uint8Array(audioBuffer)], { type: mimeType });
+  formData.append("audio", blob, filename);
+
+  const url = `${ADDIS_BASE_URL}${SCRIBE_PATH}?backend=turbo&request_id=${requestId}&language=${language}`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+      },
+      body: formData,
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const text = json.data?.text?.trim();
+    if (!text) return null;
+    return { text, seconds: json.data?.seconds };
+  } catch {
+    return null;
+  }
+}
+
 /** Test-only hook: clears the in-memory audio cache. */
 export function __clearAddisCacheForTests(): void {
   audioCache.clear();

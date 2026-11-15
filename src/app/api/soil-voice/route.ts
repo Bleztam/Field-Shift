@@ -126,7 +126,7 @@ ${questionSection}
     }
   },
   "mood": "stressed",
-  "firstPersonScript": "A dramatic, scientifically grounded 2 sentence monologue spoken BY the soil itself in ${languageName}. The soil refers to itself in first person (e.g. 'I am the soil'). Cite specific NASA data (SMAP moisture, ECOSTRESS heat, Landsat BSI, etc.) but do NOT invent new numbers beyond the data provided. ${farmerQuestion ? 'Directly address the farmer question: ' + farmerQuestion : 'Be emotional and urgent.'} Do not add any closing advice about consulting an agent — that line is appended separately by the system.${scriptRule}",
+  "firstPersonScript": "A compassionate, practical 2-sentence agricultural monologue spoken directly BY the living soil in ${languageName}. The soil speaks in first person (e.g. 'I am your soil...'). MANDATORY GUIDELINES: 1. NON-TECHNICAL WEATHER & MOISTURE: First, describe what the weather feels like in simple, everyday terms based on the weather context (how the sun has been baking hot, dry winds blowing, and rains absent or scarce). Then state that because of this dry heat, your soil moisture is low deep in your root zone and you feel parched. 2. WATERING BY IRRIGATION: Tell the farmer clearly that because moisture is low, they should water you by irrigation (or furrow/bucket watering) before or after sowing to help crops survive, or sow drought-hardy seeds like chickpeas (Shimbra) or cowpeas, and mulch your surface with crop residue to lock in moisture. 3. STRICTLY NO JARGON: NEVER mention satellite names, orbital sensors, or technical acronyms (NO 'ECOSTRESS', 'SMAP', 'Landsat', 'SRTM', 'NDVI', 'BSI', 'T2M', 'Precip 0.2mm')! Speak with genuine warmth and practical wisdom as the living earth. ${farmerQuestion ? 'Directly and practically answer the farmer question: ' + farmerQuestion : 'Be warm, wise, and practical.'} Do not add any closing advice about consulting an extension agent — that line is appended separately by the system.${scriptRule}",
   "englishSubtitles": "Accurate English translation of the firstPersonScript if language is not English, otherwise identical.",
   "strategies": [
     {
@@ -379,17 +379,41 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(await finalize(fallback));
     }
 
+    // Non-technical weather and soil moisture condition description
+    const temp = lp.T2M ?? 22;
+    const maxTemp = lp.T2M_MAX ?? 27;
+    const precip = lp.PRECTOTCORR ?? 0;
+    const rootzoneMoisture = preset.smap_rootzone_mm?.slice(-1)?.[0] ?? 42;
+
+    let weatherSummary = "Warm and dry with clear skies and no rain.";
+    if (precip === 0 && temp >= 24) {
+      weatherSummary = `Very hot (reaching ${Math.round(maxTemp)}°C) and completely dry, with no rainfall and dry winds baking the ground.`;
+    } else if (precip > 0 && precip < 2) {
+      weatherSummary = `Hot and dry with only tiny negligible sprinkles (${precip} mm), quickly evaporated by the sun.`;
+    } else if (precip >= 2) {
+      weatherSummary = `Some rain has fallen (${precip} mm), but warm temperatures continue to dry the surface.`;
+    }
+
+    let moistureSummary = "Moisture is low; roots are parched and thirsty. Irrigation is strongly needed if planting.";
+    if (rootzoneMoisture < 45) {
+      moistureSummary = `Soil moisture is very low (${rootzoneMoisture} mm). Roots are parched and thirsty. Irrigation (or bucket/furrow watering) is necessary for seeds to germinate safely.`;
+    } else if (rootzoneMoisture < 75) {
+      moistureSummary = `Soil moisture is moderate to low (${rootzoneMoisture} mm). Requires either irrigation or drought-hardy crops like chickpea.`;
+    }
+
     // Build NASA data summary string
     const nasaSummary = `
 - Location: ${preset.name ?? "Flagship Field"}
 - Coordinates: ${preset.lat ?? 0}, ${preset.lon ?? 0}
 - Current Crop: ${preset.crop ?? "Mixed Rainfed"}
-- Live NASA POWER Weather: Temp ${lp.T2M ?? 20}°C (Max ${lp.T2M_MAX ?? 27}°C), Precip ${lp.PRECTOTCORR ?? 0} mm/day, Solar Irradiance ${lp.ALLSKY_SFC_SW_DWN ?? 18} MJ/m²/day, RH ${lp.RH2M ?? 50}%
-- SMAP Root-Zone Soil Moisture: ${preset.smap_rootzone_mm?.slice(-1)?.[0] ?? 42} mm (9 km)
-- ECOSTRESS Evaporative Stress Index (ESI): ${preset.ecostress_esi?.slice(-1)?.[0] ?? 0.28} (70 m)
+- Everyday Weather Condition (Describe this non-technically): ${weatherSummary}
+- Soil Moisture Condition (Tell farmer moisture is low and to irrigate): ${moistureSummary}
+- Live NASA POWER Weather: Temp ${temp}°C (Max ${maxTemp}°C), Precip ${precip} mm/day, Solar Irradiance ${lp.ALLSKY_SFC_SW_DWN ?? 18} MJ/m²/day, RH ${lp.RH2M ?? 50}%
+- Root-Zone Soil Moisture: ${rootzoneMoisture} mm (9 km)
+- Evaporative Stress Index (ESI): ${preset.ecostress_esi?.slice(-1)?.[0] ?? 0.28} (70 m)
 - Landsat 30 m NDVI Peak: ${Math.max(...(preset.landsat_ndvi ?? [0.75]))}, Fallow NDVI: ${Math.min(...(preset.landsat_ndvi ?? [0.15]))}
 - Landsat 30 m Bare Soil Index (BSI) Peak: ${Math.max(...(preset.landsat_bsi ?? [0.72]))}
-- SRTM 30 m Slope: ${preset.srtm_slope_deg ?? 4.2}°, Aspect: ${preset.srtm_aspect_deg ?? 165}°
+- Slope: ${preset.srtm_slope_deg ?? 4.2}°, Aspect: ${preset.srtm_aspect_deg ?? 165}°
 - Erosion-risk Months: ${(preset.erosion_risk_months ?? [0, 1, 2, 11]).map((i: number) => (preset.months ?? ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"])[i]).join(", ")}`;
 
     const priorityStr = farmerPriorities
@@ -494,20 +518,31 @@ function getFallbackResponse(
   farmerQuestion?: string
 ): SoilVoiceResponse {
   const cropName = (preset.crop as string) || "Teff / Maize";
+  const questionLower = (farmerQuestion ?? "").toLowerCase();
 
   let firstPerson =
-    "I am the living soil beneath your feet, parched and holding only 42 millimeters of root-zone water according to NASA SMAP. Landsat watches my bare skin scorch under high bare-soil index readings as ECOSTRESS warns of severe evaporative stress. Cover me with living roots before the rains strip away my topsoil forever.";
+    "The sun has been baking down hot and dry with no rain, leaving my soil moisture very low deep in my root zone. If you plant now, please water me with irrigation and cover my surface with crop residue mulch to preserve my remaining moisture.";
 
-  if (farmerQuestion) {
-    if (farmerQuestion.toLowerCase().includes("crack")) {
-      firstPerson =
-        "I am cracking because NASA SMAP shows my moisture has dropped to 42 mm, while ECOSTRESS measures an evaporative stress index of 0.28. Without root cover, solar radiation bakes my clay minerals until my surface splits open. Plant a bridge crop now so my fissures can heal.";
-    } else if (farmerQuestion.toLowerCase().includes("cash")) {
-      firstPerson =
-        "You can protect me and still earn cash: an early legume bridge crop like cowpea or chickpea yields high-protein harvest while saving you 30% on synthetic nitrogen fertilizer. NASA Landsat data confirms it will shield my surface before the main planting season.";
-    } else {
-      firstPerson = `Listening to your question: NASA satellite data confirms my root-zone is under strain with an evaporative index of 0.28. Adopting a bridge crop will stabilize my moisture without interrupting your seasonal ${cropName} rotation.`;
-    }
+  if (questionLower.includes("crack")) {
+    firstPerson =
+      "The scorching heat and dry weather have baked my surface and my soil moisture is very low, causing me to crack open. Please water me by irrigation and spread crop residue mulch so my fissures can heal and stay cool.";
+  } else if (
+    questionLower.includes("cash") ||
+    questionLower.includes("money") ||
+    questionLower.includes("profit") ||
+    questionLower.includes("sell")
+  ) {
+    firstPerson =
+      "Even though the weather is dry and my moisture is low, you can still earn good cash: water by irrigation and sow drought-hardy chickpeas or cowpeas, which fetch good market income while replenishing my soil.";
+  } else if (
+    questionLower.includes("water") ||
+    questionLower.includes("irrigat") ||
+    questionLower.includes("rain")
+  ) {
+    firstPerson =
+      "With the dry skies and no rain falling, my moisture is very low. Giving me water through furrow or drip irrigation right now will ensure your seeds germinate safely.";
+  } else if (farmerQuestion) {
+    firstPerson = `The weather has been hot and dry, and my soil moisture is low beneath your feet. If you sow ${cropName} or chickpeas now, be sure to water me by irrigation and protect my surface with mulch.`;
   }
 
   // Deterministic per-language templates — TODO verify with native speakers
@@ -516,9 +551,9 @@ function getFallbackResponse(
     en: { script: firstPerson, subtitles: firstPerson },
     es: {
       script:
-        "Soy el suelo vivo bajo sus pies, agrietado y con solo 42 milímetros de humedad radicular según el satélite NASA SMAP. Landsat detecta mi superficie expuesta con un índice de suelo desnudo crítico mientras ECOSTRESS registra un estrés evaporativo severo. Cúbranme con raíces vivas antes de que las lluvias erosionen lo que me queda de vida.",
+        "El sol ha estado calentando fuerte y seco sin lluvias, dejando mi humedad muy baja en mis raíces. Si vas a sembrar ahora, riégame con riego y cúbreme con rastrojo de cosecha para conservar cada gota de agua.",
       subtitles:
-        "I am the living soil beneath your feet, cracked and holding only 42 mm of root-zone moisture according to NASA SMAP. Landsat detects critical bare soil exposure while ECOSTRESS logs severe evaporative stress. Cover me with living roots before rainfall erodes my remaining life.",
+        "The sun has been baking down hot and dry with no rain, leaving my soil moisture very low deep in my roots. If you sow now, please water me with irrigation and cover me with crop residue mulch to preserve every drop of water.",
     },
     am: {
       script: SUPPORTED_LANGUAGES.am.fallbackScript,

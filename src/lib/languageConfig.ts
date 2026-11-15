@@ -83,9 +83,9 @@ export const SUPPORTED_LANGUAGES: Record<AddisLanguageCode, SupportedLanguage> =
     thinking: "እያሰብሁ ነው…",
     closingLine: "ዉሳኔውን ከአካባቢ ምክር ባለሙያ ጋር ያረጋግጡ።",
     fallbackScript:
-      "እኔ ከእግርዎ በታች ያለሁት ህያው አፈር ነኝ። በናሳ SMAP መረጃ መሰረት እርጥበቴ ዝቅ ብሏል። ዝናቡ የላይኛውን ለም አፈሬን ከመውሰዱ በፊት በህያው ሰብል ሸፍኑኝ።",
+      "ፀሐዩ ሞቃትና አየሩ ደረቅ በመሆኑ ምንም ዝናብ አልወረደም፤ በመሆኑም በውስጤ ያለው የአፈር እርጥበት በጣም ቀንሷል። አሁን የምትዘራ ከሆነ በመስኖ አጠጣኝ፣ እንዲሁም የቀረኝን እርጥበት ለመጠበቅ የሰብል ተረፈ-ምርት በላዬ ላይ አልብስልኝ።",
     fallbackSubtitles:
-      "I am the living soil beneath your feet. NASA SMAP shows my moisture is low. Cover me with a living crop before the rain carries my topsoil away.",
+      "The sun has been baking hot and dry with no rain, so the moisture inside my soil is very low. If you sow now, please water me with irrigation and spread crop residue mulch to preserve my remaining moisture.",
     cropNames: AMHARIC_CROPS,
   },
   om: {
@@ -102,9 +102,9 @@ export const SUPPORTED_LANGUAGES: Record<AddisLanguageCode, SupportedLanguage> =
     thinking: "Nuu yaadaa jira…",
     closingLine: "Murtee kana ogeessa misoomaa naannoo keessanii mirkaneessaa.",
     fallbackScript:
-      "Ani biyyoo jireenya qabu miila kee jala jiru dha. Ragaan NASA SMAP bishaan koo gadi bu'uu agarsiisa. Osoo roobni lafaa gabbina koo hin qaatin dura biqiltuun na uffisaa.",
+      "Aduun ho'aa fi qilleensi gogaa waan ta'eef roobni hin jiru, kanaanis jiidhiinsi biyyoo koo keessa jiru baay'ee xiqqaateera. Amma kan facaaftu yoo ta'e bishaan jallisiitiin na obasi, akkasumas jiidha koo eeguuf kosii midhaaniitiin na haguugi.",
     fallbackSubtitles:
-      "I am the living soil beneath your feet. NASA SMAP shows my moisture is low. Cover me with a living crop before the rain washes my fertile soil away.",
+      "The sun has been hot and dry with no rain, so my soil moisture is very low. If you sow now, water me with irrigation and cover me with crop residue mulch to preserve my moisture.",
     cropNames: {
       teff: ["xafi", "teff"],
       maize: ["boqqolloo", "boqolloo", "maize"],
@@ -129,9 +129,9 @@ export const SUPPORTED_LANGUAGES: Record<AddisLanguageCode, SupportedLanguage> =
     thinking: "I am thinking…",
     closingLine: "Please confirm this advice with your local development agent.",
     fallbackScript:
-      "I am the living soil beneath your feet. NASA SMAP shows my moisture is low. Cover me with a living crop before the rain carries my topsoil away.",
+      "ፀሓይ ሙቐት ስለዝኾነን ዝናብ ስለዘየለን፣ ኣብ ውሽጠይ ዘሎ ርስሓት ሓመድ ኣዝዩ ነክዩ ኣሎ። ሕጂ ትዘርኡ እንተኾንኩም ብመስኖ ኣስትዩኒ፣ ዝተረፈ ርስሓተይ ንምዕቃብ ድማ ብሓሰር ሸፍኑኒ።",
     fallbackSubtitles:
-      "I am the living soil beneath your feet. NASA SMAP shows my moisture is low. Cover me with a living crop before the rain carries my topsoil away.",
+      "The sun has been hot and dry with no rain, leaving my soil moisture very low. If you sow now, please water me with irrigation and cover me with crop residue mulch to protect the moisture.",
     cropNames: {
       teff: ["ጣፍ", "ጤፍ"],
       maize: ["በቆሎ"],
@@ -156,9 +156,9 @@ export const SUPPORTED_LANGUAGES: Record<AddisLanguageCode, SupportedLanguage> =
     thinking: "I am thinking…",
     closingLine: "Please confirm this advice with your local development agent.",
     fallbackScript:
-      "I am the living soil beneath your feet. NASA SMAP shows my moisture is low. Cover me with a living crop before the rain carries my topsoil away.",
+      "The weather has been hot and dry with little rain, so my soil moisture is very low. If you plant now, please water me with irrigation and spread crop residue mulch to lock in my moisture.",
     fallbackSubtitles:
-      "I am the living soil beneath your feet. NASA SMAP shows my moisture is low. Cover me with a living crop before the rain carries my topsoil away.",
+      "The weather has been hot and dry with little rain, so my soil moisture is very low. If you plant now, please water me with irrigation and spread crop residue mulch to lock in my moisture.",
     cropNames: {
       teff: ["teff"],
       maize: ["boqqolloo", "boqolloo", "maize"],
@@ -183,9 +183,9 @@ export const SUPPORTED_LANGUAGES: Record<AddisLanguageCode, SupportedLanguage> =
     thinking: "I am thinking…",
     closingLine: "Please confirm this advice with your local development agent.",
     fallbackScript:
-      "I am the living soil beneath your feet. NASA SMAP shows my moisture is low. Cover me with a living crop before the rain carries my topsoil away.",
+      "The weather has been hot and dry with little rain, so my soil moisture is very low. If you plant now, please water me with irrigation and spread crop residue mulch to lock in my moisture.",
     fallbackSubtitles:
-      "I am the living soil beneath your feet. NASA SMAP shows my moisture is low. Cover me with a living crop before the rain carries my topsoil away.",
+      "The weather has been hot and dry with little rain, so my soil moisture is very low. If you plant now, please water me with irrigation and spread crop residue mulch to lock in my moisture.",
     cropNames: {
       teff: ["teff"],
       maize: ["maize"],
