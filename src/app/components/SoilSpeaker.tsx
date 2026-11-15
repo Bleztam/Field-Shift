@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useEffect, useState, useCallback } from "react";
+import React, { useRef, useEffect, useCallback } from "react";
 import { Volume2, VolumeX } from "lucide-react";
 
 interface SoilSpeakerProps {
@@ -22,56 +22,41 @@ export default function SoilSpeaker({
 }: SoilSpeakerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
-  const [showSubtitles, setShowSubtitles] = useState(true);
+  const subtitleRef = useRef<HTMLDivElement>(null);
 
-  // ── Audio waveform visualization ──
+  // ── Compact waveform visualization ──
   const drawWaveform = useCallback(
     (ctx: CanvasRenderingContext2D, w: number, h: number, t: number) => {
       ctx.clearRect(0, 0, w, h);
 
-      if (!isPlaying) {
-        // Idle state — subtle resting line
-        ctx.strokeStyle = "rgba(180, 110, 45, 0.4)";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        const midY = h / 2;
-        for (let x = 0; x < w; x++) {
-          const y = midY + Math.sin(x * 0.05 + t * 0.002) * 2;
-          if (x === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-        return;
-      }
-
-      // Live 16-bar frequency data or simulated fallback
-      const barsCount = frequencyData && frequencyData.length === 16 ? 16 : 32;
-      const barW = Math.max(3, (w - barsCount * 3) / barsCount);
+      const barsCount = 12;
+      const gap = 2;
+      const barW = Math.max(2, (w - barsCount * gap) / barsCount);
 
       for (let i = 0; i < barsCount; i++) {
-        let barH = 4;
-        if (frequencyData && frequencyData.length === 16) {
-          const val = frequencyData[i] || 0;
-          barH = Math.max(4, (val / 255) * (h * 0.85));
+        let barH = 3;
+        if (isPlaying && frequencyData && frequencyData.length >= 12) {
+          // map 16 bars → 12 bars
+          const srcIdx = Math.floor((i / barsCount) * frequencyData.length);
+          const val = frequencyData[srcIdx] || 0;
+          barH = Math.max(3, (val / 255) * (h * 0.85));
+        } else if (isPlaying) {
+          // simulated sine fallback
+          barH = Math.abs(Math.sin(i * 0.4 + t * 0.01) * h * 0.45) + 3;
         } else {
-          const amplitude =
-            Math.sin(i * 0.35 + t * 0.009) *
-            Math.cos(i * 0.2 + t * 0.006) *
-            (h * 0.4);
-          barH = Math.abs(amplitude) + 6;
+          // idle breathing
+          barH = 2 + Math.abs(Math.sin(i * 0.3 + t * 0.0015)) * 3;
         }
 
-        const x = i * (barW + 3) + 4;
+        const x = i * (barW + gap) + 2;
         const y = (h - barH) / 2;
-
         const intensity = Math.min(1, barH / (h * 0.85));
         const r = Math.floor(210 + intensity * 45);
-        const g = Math.floor(130 + intensity * 60);
-        const b = Math.floor(40 + intensity * 40);
-        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.95)`;
-
+        const g = Math.floor(130 + intensity * 50);
+        const b = Math.floor(40);
+        ctx.fillStyle = `rgba(${r},${g},${b},${isPlaying ? 0.95 : 0.4})`;
         ctx.beginPath();
-        ctx.roundRect(x, y, barW, barH, 2);
+        (ctx as CanvasRenderingContext2D).roundRect(x, y, barW, barH, 1);
         ctx.fill();
       }
     },
@@ -88,8 +73,7 @@ export default function SoilSpeaker({
       const dpr = window.devicePixelRatio || 1;
       canvas.width = canvas.clientWidth * dpr;
       canvas.height = canvas.clientHeight * dpr;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.scale(dpr, dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       drawWaveform(ctx, canvas.clientWidth, canvas.clientHeight, t);
       animRef.current = requestAnimationFrame(animate);
     };
@@ -98,40 +82,63 @@ export default function SoilSpeaker({
     return () => cancelAnimationFrame(animRef.current);
   }, [drawWaveform]);
 
-  return (
-    <div className="relative z-20 mx-3 mb-2">
-      {/* Waveform + controls */}
-      <div className="bg-black/75 backdrop-blur-md rounded-2xl p-3 border border-amber-800/40 shadow-lg">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onToggle}
-            className="flex-shrink-0 w-10 h-10 rounded-full bg-gradient-to-tr from-amber-700 to-amber-500 flex items-center justify-center hover:from-amber-600 hover:to-amber-400 transition-all shadow-md active:scale-95"
-            aria-label={isPlaying ? "Stop speaking" : "Play soil voice"}
-          >
-            {isPlaying ? (
-              <VolumeX className="w-5 h-5 text-white animate-pulse" />
-            ) : (
-              <Volume2 className="w-5 h-5 text-white" />
-            )}
-          </button>
-          <canvas ref={canvasRef} className="flex-1 h-12" />
-        </div>
+  // ── Auto-scroll subtitle text ──
+  useEffect(() => {
+    const el = subtitleRef.current;
+    if (!el || !isPlaying || !subtitles) return;
 
-        {/* Subtitles */}
-        {showSubtitles && subtitles && (
-          <div className="mt-2 px-1">
-            <p className="text-xs text-amber-100/90 italic leading-relaxed bg-black/40 p-2 rounded-lg border border-white/5">
+    el.scrollTop = 0;
+    let pos = 0;
+    const speed = 0.4; // px per frame
+
+    const scroll = () => {
+      if (!el) return;
+      pos += speed;
+      if (pos > el.scrollHeight - el.clientHeight) pos = 0;
+      el.scrollTop = pos;
+      raf = requestAnimationFrame(scroll);
+    };
+
+    let raf = requestAnimationFrame(scroll);
+    return () => cancelAnimationFrame(raf);
+  }, [isPlaying, subtitles]);
+
+  return (
+    // Compact floating glassmorphic game speech bubble — max 2 lines tall
+    <div className="relative z-20 mx-3 mb-2">
+      <div className="bg-black/60 backdrop-blur-xl rounded-2xl border border-amber-500/30 shadow-lg shadow-black/40 px-2 py-1.5 flex items-center gap-2">
+        {/* 🔊 Toggle button */}
+        <button
+          onClick={onToggle}
+          className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-tr from-amber-700 to-amber-500 flex items-center justify-center hover:from-amber-600 hover:to-amber-400 transition-all shadow active:scale-95"
+          aria-label={isPlaying ? "Stop speaking" : "Play soil voice"}
+        >
+          {isPlaying ? (
+            <VolumeX className="w-4 h-4 text-white animate-pulse" />
+          ) : (
+            <Volume2 className="w-4 h-4 text-white" />
+          )}
+        </button>
+
+        {/* Compact waveform (32px tall) */}
+        <canvas ref={canvasRef} className="flex-shrink-0 h-8 w-16" />
+
+        {/* 2-line auto-scrolling subtitle */}
+        {subtitles ? (
+          <div
+            ref={subtitleRef}
+            className="flex-1 overflow-hidden"
+            style={{ maxHeight: "2.6rem" }}
+          >
+            <p className="text-[11px] text-amber-100/90 italic leading-tight whitespace-normal">
               &ldquo;{subtitles}&rdquo;
             </p>
           </div>
+        ) : (
+          <p className="flex-1 text-[11px] text-amber-500/50 italic">
+            {isPlaying ? "Listening to soil…" : "Tap 🔊 to hear the soil speak"}
+          </p>
         )}
-
-        <button
-          onClick={() => setShowSubtitles(!showSubtitles)}
-          className="mt-1 text-[11px] text-amber-400/70 hover:text-amber-300 transition-colors"
-        >
-          {showSubtitles ? "Hide subtitles" : "Show subtitles"}
-        </button>
       </div>
     </div>
   );
