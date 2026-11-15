@@ -61,14 +61,31 @@ export interface RotationStrategy {
   matchScore?: number;       // 0-100% computed from farmer priorities
 }
 
+export type AudioProvider = "addis" | "gemini" | "browser" | "none";
+
+export type CropVerdictDecision = "plant" | "plant_with_caution" | "wait";
+export type VerdictConfidence = "low" | "medium" | "high";
+
 export interface SoilVoiceResponse {
   groundTruthCalibration: GroundTruthCalibration;
   firstPersonScript: string;
   englishSubtitles: string;
   strategies: [RotationStrategy, RotationStrategy, RotationStrategy];
-  audioBase64?: string;
+  audioBase64?: string | null;
+  audioProvider?: AudioProvider;
+  verdict?: CropVerdictDecision;
+  reasons?: string[];
+  confidence?: VerdictConfidence;
+  crop?: string | null;
+  intent?: string;
   mood?: SoilMood;
   farmerQuestion?: string;
+  /** Echo of the resolved spoken language (Addis code or legacy name). */
+  language?: string;
+  /** Region resolved from the farmer's coordinates, when provided. */
+  regionName?: string | null;
+  /** How the client obtained the coordinates: live | saved | chosen | demo. */
+  locationSource?: string;
 }
 
 export type Language = "Amharic" | "Afaan Oromo" | "English" | "Spanish";

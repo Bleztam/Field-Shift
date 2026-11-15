@@ -42,3 +42,6 @@ next-env.d.ts
 
 /.antigravity
 .gitignore
+
+# env template is safe to commit (empty values)
+!.env.example
